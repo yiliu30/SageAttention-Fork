@@ -73,6 +73,13 @@ def triton_group_mean(q: torch.Tensor):
 
 
 def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_mean: bool = True):
+    """
+    - pad q, k, v to multiple of 128 in seq_len dimension
+    - center k by subtracting mean over seq_len dimension
+    - if per_block_mean is True, compute mean of q in blocks of 128 and subtract it from q
+      else compute mean of q over entire seq_len dimension and subtract it from q
+    - compute delta_s as the matmul of q_mean and k^T
+    """
 
     def pad_128(x):
         L = x.size(2)
@@ -80,7 +87,7 @@ def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_
         if pad_len == 0:
             return x.contiguous()
         return F.pad(x, (0, 0, 0, pad_len), value=0).contiguous()
-    
+    # query: batch_size, head_num, seq_len, head_dim
     k -= k.mean(dim=-2, keepdim=True)  
     q, k, v = map(lambda x: pad_128(x), [q, k, v])
     if per_block_mean:
@@ -88,6 +95,7 @@ def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_
     else:
         qm = q.mean(dim=-2, keepdim=True)
         q = q - qm
+    # [1, 8, 2, 128] @ [1, 8, 128, 256] -> [1, 8, 2, 256]
     delta_s = torch.matmul(qm, k.transpose(-2, -1)).to(torch.float32).contiguous()
     return q, k, v, delta_s
 
@@ -136,9 +144,14 @@ def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_
     KL = k.size(2)
     is_bf16 = q.dtype == torch.bfloat16
     q, k, v, delta_s = preprocess_qkv(q, k, v, per_block_mean)
+    # [q_fp4e2m1_packed_uint8, q_scale_fp8e4m3fn]
+    # query [batch_size, head_num, seq_len, head_dim]
     qlist_from_cuda = scale_and_quant_fp4(q)
     klist_from_cuda = scale_and_quant_fp4_permute(k)
     vlist_from_cuda = scale_and_quant_fp4_transpose(v)
+    breakpoint()
+    # GROUP_SIZE: 128
+    # delta_s: [batch_size, num_head, head_dim//GROUP_SIZE, seq_len] [1, 8, 2, 256]
     o_fp4 = blockscaled_fp4_attn(
     qlist_from_cuda,
     klist_from_cuda, 
@@ -150,3 +163,19 @@ def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_
     is_bf16
     )[0][:, :, :QL, :].contiguous()
     return o_fp4
+
+def blockscaled_fp4_attn_ref(
+    qlist: Tuple,
+    klist: Tuple,
+    vlist: Tuple,
+    delta_s: torch.Tensor,
+    KL: int,
+    is_causal: bool = False,
+    per_block_mean: bool = True,
+    is_bf16: bool = True,
+):
+    softmax_scale = (qlist[0].shape[-1] * 2) ** (-0.5)
+    q_quant_packed, q_scale = qlist
+    k_quant_packed, k_scale = klist
+    v_quant_packed, v_scale = vlist
+    # pass
