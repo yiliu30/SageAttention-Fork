@@ -219,7 +219,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     auto dprops = at::cuda::getCurrentDeviceProperties();
     bool is_sm120 = dprops->major == 12 && dprops->minor == 0;
     bool is_sm121 = dprops->major == 12 && dprops->minor == 1;
-    TORCH_CHECK(is_sm120 || is_sm121, "only supports Blackwell GPUs or newer.");
+    bool is_sm100 = dprops->major == 10 && dprops->minor == 0;
+    TORCH_CHECK(is_sm120 || is_sm121 || is_sm100, "only supports Blackwell GPUs or newer.");
 
     auto q_dtype = q.dtype();
     auto sfq_dtype = sfq.dtype();
@@ -228,9 +229,9 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
 
-    TORCH_CHECK(sfq_dtype == torch::kFloat8_e4m3fn, "q dtype must be uint8");
-    TORCH_CHECK(sfk.dtype() == sfq_dtype, "query and key must have the same dtype");
-    TORCH_CHECK(sfv.dtype() == sfq_dtype, "query and value must have the same dtype");
+    TORCH_CHECK(sfq_dtype == torch::kFloat8_e4m3fn, "sfq dtype must be float8_e4m3fn");
+    TORCH_CHECK(sfk.dtype() == sfq_dtype, "key scale factor must have the same dtype as query scale factor");
+    TORCH_CHECK(sfv.dtype() == sfq_dtype, "value scale factor must have the same dtype as query scale factor");
     CHECK_DEVICE(sfq); CHECK_DEVICE(sfk); CHECK_DEVICE(sfv);
     
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
@@ -241,12 +242,13 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(q.is_contiguous(), "Input tensor must be contiguous");
     TORCH_CHECK(k.is_contiguous(), "Input tensor must be contiguous");
     TORCH_CHECK(v.is_contiguous(), "Input tensor must be contiguous");
-
+    // q: [batch_size, num_heads, seqlen_q, head_size_og/2]
     const auto sizes = q.sizes();
     auto opts = q.options();
     const int batch_size = sizes[0];
     int seqlen_q = sizes[2];
     int num_heads = sizes[1];
+    // original head size ?
     const int head_size_og = sizes[3];
     const int unpacked_head_size = head_size_og * 2;
     const int seqlen_k = k.size(2);
@@ -287,14 +289,35 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     at::Tensor p;
 
     Flash_fwd_params params;
+    // const size_t b,
+    // const size_t seqlen_q,
+    // const size_t seqlen_k,
+    // const size_t unpadded_seqlen_k,
+    // const size_t seqlen_q_rounded,
+    // const size_t seqlen_k_rounded,
+    // const size_t h,
+    // const size_t h_k,
+    // const size_t d,
+    // const size_t d_rounded,
     set_params_fprop(params,
-                     batch_size,
-                     seqlen_q, seqlen_k, unpadded_k,
-                     seqlen_q_rounded, seqlen_k_rounded,
-                     num_heads, num_heads_k,
-                     unpacked_head_size, unpacked_head_size,
-                     q, k, v, delta_s, out, 
-                     sfq, sfk, sfv,
+                     /* b */ batch_size,
+                     /* seqlen_q */ seqlen_q,
+                     /* seqlen_k */ seqlen_k,
+                     /* unpadded_seqlen_k */ unpadded_k,
+                     /* seqlen_q_rounded */ seqlen_q_rounded,
+                     /* seqlen_k_rounded */ seqlen_k_rounded,
+                     /* h */ num_heads,
+                     /* h_k */ num_heads_k,
+                     /* d */ unpacked_head_size,
+                     /* d_rounded */ unpacked_head_size,
+                     /* q */ q,
+                     /* k */ k,
+                     /* v */ v,
+                     /* delta_s */ delta_s,
+                     /* out */ out, 
+                     /* sfq */ sfq,
+                     /* sfk */ sfk,
+                     /* sfv */ sfv,
                      /*cu_seqlens_q_d=*/nullptr,
                      /*cu_seqlens_k_d=*/nullptr,
                      /*seqused_k=*/nullptr,

@@ -140,6 +140,10 @@ __global__ void scaled_fp4_quant_kernel(
   static_assert(std::is_same<T, half>::value || std::is_same<T, nv_bfloat16>::value, "Only half and bfloat16 input are supported");
   using PackedVec = PackedVec<T>;
 
+    //  dim3 block(BLOCK_SIZE * HEAD_DIM / CVT_FP4_ELTS_PER_THREAD, 1, 1);
+    //  dim3 grid((num_tokens + BLOCK_SIZE - 1) / BLOCK_SIZE, batch_size, num_heads);
+
+  
   const int batch_id = blockIdx.y;
   const int head_id = blockIdx.z;
   const int token_block_id = blockIdx.x;
