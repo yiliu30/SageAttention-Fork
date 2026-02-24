@@ -1,0 +1,15 @@
+# PyTorch (CUDA 13.0) - install separately:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+
+# SageAttention (editable install from repo root):
+#   EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128 pip install -e . -v --no-build-isolation
+
+packaging
+tqdm
+diffusers==0.33
+transformers==4.57.3
+tiktoken
+sentencepiece
+protobuf
+accelerate
+opencv-python
