@@ -1,0 +1,7 @@
+# ninja log v7
+0	112636	1769749266280832944	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/blackwell/api.o	5f3c35c09aeafaea
+2	34783	1769749379231068669	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/quantization/fp4_quantization_4d.o	31c3cd13e3bca74
+13	104979	1769749811359981717	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/blackwell/api.o	5f3c35c09aeafaea
+14	101999	1769751509500451007	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/blackwell/api.o	5f3c35c09aeafaea
+15	115098	1769759837378845687	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/blackwell/api.o	5f3c35c09aeafaea
+15	34363	1769759952741071021	/home/yiliu7/workspace/sage-attn-xpu/third_party/SageAttention/sageattention3_blackwell/build/temp.linux-x86_64-cpython-312/sageattn3/quantization/fp4_quantization_4d.o	31c3cd13e3bca74

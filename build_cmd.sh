@@ -1,0 +1,1 @@
+EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128 uv pip  install -e . -v --no-build-isolation
