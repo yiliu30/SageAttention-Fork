@@ -91,10 +91,10 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     dim3 cluster_dims(size<0>(ClusterShape{}), size<1>(ClusterShape{}), size<2>(ClusterShape{}));
     cutlass::ClusterLaunchParams launch_params{grid_dims, block_dims, cluster_dims, smem_size, stream};
     // print the launch configuration
-    printf("Flash fwd launch kernel with grid (%d,%d,%d) block (%d,%d,%d) smem %d\n",
-        grid_dims.x, grid_dims.y, grid_dims.z,
-        block_dims.x, block_dims.y, block_dims.z,
-        smem_size);
+    // printf("Flash fwd launch kernel with grid (%d,%d,%d) block (%d,%d,%d) smem %d\n",
+    //     grid_dims.x, grid_dims.y, grid_dims.z,
+    //     block_dims.x, block_dims.y, block_dims.z,
+    //     smem_size);
     cutlass::launch_kernel_on_cluster(launch_params, kernel, params, mainloop_params, epilogue_params, scheduler_params);
     
     C10_CUDA_KERNEL_LAUNCH_CHECK();
