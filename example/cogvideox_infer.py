@@ -11,12 +11,78 @@ prompt_path = "videos/testing_prompts.txt"
 prompt_path = "videos/open_sora_prompts.txt"
 
 
+class AttentionProportionProfiler:
+    """Wraps an attention function with async CUDA event timing to measure
+    the total GPU time spent in attention without serializing the pipeline."""
+    def __init__(self, attn_fn):
+        self.attn_fn = attn_fn
+        self.events = []  # list of (start_event, end_event)
+
+    def __call__(self, *args, **kwargs):
+        start = torch.cuda.Event(enable_timing=True)
+        end = torch.cuda.Event(enable_timing=True)
+        start.record()
+        result = self.attn_fn(*args, **kwargs)
+        end.record()
+        self.events.append((start, end))
+        return result
+
+    def total_attn_ms(self):
+        torch.cuda.synchronize()
+        return sum(s.elapsed_time(e) for s, e in self.events)
+
+    def call_count(self):
+        return len(self.events)
+
+    def reset(self):
+        self.events.clear()
+
+
+class ModuleForwardTimer:
+    """Wraps a module's forward method with async CUDA event timing.
+    Use as a context manager or call attach/detach manually."""
+    def __init__(self, module):
+        self.module = module
+        self.events = []  # list of (start_event, end_event)
+        self._orig_forward = None
+
+    def attach(self):
+        self._orig_forward = self.module.forward
+        timer = self
+        orig = self._orig_forward
+        def timed_forward(*args, **kwargs):
+            start = torch.cuda.Event(enable_timing=True)
+            end = torch.cuda.Event(enable_timing=True)
+            start.record()
+            result = orig(*args, **kwargs)
+            end.record()
+            timer.events.append((start, end))
+            return result
+        self.module.forward = timed_forward
+
+    def detach(self):
+        if self._orig_forward is not None:
+            self.module.forward = self._orig_forward
+            self._orig_forward = None
+
+    def total_ms(self):
+        torch.cuda.synchronize()
+        return sum(s.elapsed_time(e) for s, e in self.events)
+
+    def call_count(self):
+        return len(self.events)
+
+    def reset(self):
+        self.events.clear()
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="CogVideoX Inference")
     parser.add_argument("--model",choices=["cogvideox-2b", "cogvideox1.5-5b"], default="cogvideox-2b", help="CogVideoX model")
     parser.add_argument('--compile', action='store_true', help='Compile the model')
     parser.add_argument("-s",'--smoke', action='store_true', help='Run a smoke test')
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
+    parser.add_argument('--proportion', action='store_true', help='Measure attention kernel time proportion in the whole pipeline')
     parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'fa3', 'fa3_fp8'], help='Attention type')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
@@ -48,6 +114,36 @@ if __name__ == "__main__":
     elif args.attention_type == 'fa3_fp8':
         from sageattention.fa3_wrapper import fa3_fp8
         F.scaled_dot_product_attention = fa3_fp8
+
+    # Wrap attention with record_function + NVTX for torch profiler / nsight
+    if args.profile:
+        _orig_attn = F.scaled_dot_product_attention
+        _attn_label = f"attn_{args.attention_type}"
+        def _profiled_attn(*args_inner, **kwargs_inner):
+            torch.cuda.nvtx.range_push(_attn_label)
+            with torch.profiler.record_function(_attn_label):
+                result = _orig_attn(*args_inner, **kwargs_inner)
+            torch.cuda.nvtx.range_pop()
+            return result
+        F.scaled_dot_product_attention = _profiled_attn
+
+    # Wrap attention with proportion profiler if requested
+    attn_profiler = None
+    sage3_sub_timers = {}
+    if args.proportion:
+        attn_profiler = AttentionProportionProfiler(F.scaled_dot_product_attention)
+        F.scaled_dot_product_attention = attn_profiler
+
+        # Wrap sage3 sub-functions for per-step breakdown
+        if args.attention_type == 'sage3':
+            import sageattn3.api as _sage3_api
+            for name in ['preprocess_qkv', 'scale_and_quant_fp4',
+                         'scale_and_quant_fp4_permute', 'scale_and_quant_fp4_transpose',
+                         'blockscaled_fp4_attn']:
+                timer = AttentionProportionProfiler(getattr(_sage3_api, name))
+                sage3_sub_timers[name] = timer
+                setattr(_sage3_api, name, timer)
+
     prompt_path_prefix = "smoke"
     # extract prefix from prompt_path
     prompt_path_prefix = os.path.basename(prompt_path).split(".")[0]
@@ -69,7 +165,7 @@ if __name__ == "__main__":
         selected_prompts = ["A dog is running in the park."]
         num_inference_steps = 5
 
-    if not args.profile:
+    if not args.profile and not args.proportion:
         pipe.enable_model_cpu_offload()
     else:
         pipe.to("cuda")
@@ -117,6 +213,82 @@ if __name__ == "__main__":
         print(f"Profiling trace saved to {trace_dir}/ (view with: tensorboard --logdir {trace_dir})")
 
         export_to_video(video, f"{video_dir}/{global_i}.mp4", fps=8)
+        del video
+        gc.collect()
+        torch.cuda.empty_cache()
+
+    if args.proportion:
+        prompt = selected_prompts[0]
+        print(f"Measuring attention proportion for [{args.attention_type}] with prompt: {prompt}")
+
+        # Attach transformer forward timer
+        transformer_timer = ModuleForwardTimer(pipe.transformer)
+        transformer_timer.attach()
+
+        # warmup
+        print("Warming up...")
+        for _ in range(3):
+            attn_profiler.reset()
+            transformer_timer.reset()
+            for t in sage3_sub_timers.values():
+                t.reset()
+            video = pipe(
+                prompt=prompt,
+                num_videos_per_prompt=1,
+                num_inference_steps=num_inference_steps,
+                num_frames=num_frames,
+                guidance_scale=6,
+                generator=torch.Generator(device="cuda").manual_seed(42),
+            ).frames[0]
+            del video
+            gc.collect()
+            torch.cuda.empty_cache()
+
+        print("Warmup completed. Measuring attention proportion...")
+        attn_profiler.reset()
+        transformer_timer.reset()
+        for t in sage3_sub_timers.values():
+            t.reset()
+        pipe_start = torch.cuda.Event(enable_timing=True)
+        pipe_end = torch.cuda.Event(enable_timing=True)
+
+        pipe_start.record()
+        video = pipe(
+            prompt=prompt,
+            num_videos_per_prompt=1,
+            num_inference_steps=num_inference_steps,
+            num_frames=num_frames,
+            guidance_scale=6,
+            generator=torch.Generator(device="cuda").manual_seed(42),
+        ).frames[0]
+        pipe_end.record()
+        torch.cuda.synchronize()
+
+        total_ms = pipe_start.elapsed_time(pipe_end)
+        transformer_ms = transformer_timer.total_ms()
+        attn_ms = attn_profiler.total_attn_ms()
+        print(f"\n{'='*60}")
+        print(f"Attention Proportion Report ({args.attention_type})")
+        print(f"{'='*60}")
+        print(f"  Total pipeline GPU time : {total_ms:>10.1f} ms")
+        print(f"  Transformer GPU time    : {transformer_ms:>10.1f} ms")
+        print(f"  Attention kernel time   : {attn_ms:>10.1f} ms")
+        print(f"  ---- Proportions ----")
+        print(f"  Attn / Pipeline         : {attn_ms / total_ms * 100:>10.1f} %")
+        print(f"  Attn / Transformer      : {attn_ms / transformer_ms * 100:>10.1f} %")
+        print(f"  Transformer / Pipeline  : {transformer_ms / total_ms * 100:>10.1f} %")
+        print(f"  ---- Counts ----")
+        print(f"  Attention calls         : {attn_profiler.call_count():>10d}")
+        print(f"  Transformer fwd calls   : {transformer_timer.call_count():>10d}")
+        print(f"  Avg attn per call       : {attn_ms / max(attn_profiler.call_count(), 1):>10.2f} ms")
+        if sage3_sub_timers:
+            print(f"  ---- Sage3 Sub-step Breakdown ----")
+            for name, timer in sage3_sub_timers.items():
+                sub_ms = timer.total_attn_ms()
+                print(f"  {name:30s}: {sub_ms:>8.1f} ms ({sub_ms / attn_ms * 100:>5.1f}% of attn)")
+        print(f"{'='*60}\n")
+
+        transformer_timer.detach()
         del video
         gc.collect()
         torch.cuda.empty_cache()
