@@ -149,7 +149,6 @@ def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_
     qlist_from_cuda = scale_and_quant_fp4(q)
     klist_from_cuda = scale_and_quant_fp4_permute(k)
     vlist_from_cuda = scale_and_quant_fp4_transpose(v)
-    breakpoint()
     # GROUP_SIZE: 128
     # delta_s: [batch_size, num_head, head_dim//GROUP_SIZE, seq_len] [1, 8, 2, 256]
     o_fp4 = blockscaled_fp4_attn(
