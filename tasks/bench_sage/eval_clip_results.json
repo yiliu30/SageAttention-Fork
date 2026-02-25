@@ -1,177 +1,393 @@
 {
-  "sdpa": {
-    "clipsim": 0.337378,
-    "clipt": 0.979346,
-    "clipsim_per_video": [
-      {
-        "video": "0.mp4",
-        "clipsim": 0.371094
-      },
-      {
-        "video": "1.mp4",
-        "clipsim": 0.316895
-      },
-      {
-        "video": "2.mp4",
-        "clipsim": 0.362061
-      },
-      {
-        "video": "3.mp4",
-        "clipsim": 0.319092
-      },
-      {
-        "video": "4.mp4",
-        "clipsim": 0.325928
-      },
-      {
-        "video": "5.mp4",
-        "clipsim": 0.342773
-      },
-      {
-        "video": "6.mp4",
-        "clipsim": 0.30127
-      },
-      {
-        "video": "7.mp4",
-        "clipsim": 0.327393
-      },
-      {
-        "video": "8.mp4",
-        "clipsim": 0.382568
-      },
-      {
-        "video": "9.mp4",
-        "clipsim": 0.324707
-      }
-    ],
-    "clipt_per_video": [
-      {
-        "video": "0.mp4",
-        "clipt": 0.98584
-      },
-      {
-        "video": "1.mp4",
-        "clipt": 0.986328
-      },
-      {
-        "video": "2.mp4",
-        "clipt": 0.979004
-      },
-      {
-        "video": "3.mp4",
-        "clipt": 0.98877
-      },
-      {
-        "video": "4.mp4",
-        "clipt": 0.987305
-      },
-      {
-        "video": "5.mp4",
-        "clipt": 0.967773
-      },
-      {
-        "video": "6.mp4",
-        "clipt": 0.961914
-      },
-      {
-        "video": "7.mp4",
-        "clipt": 0.981934
-      },
-      {
-        "video": "8.mp4",
-        "clipt": 0.969238
-      },
-      {
-        "video": "9.mp4",
-        "clipt": 0.985352
-      }
-    ]
-  },
   "sage3": {
-    "clipsim": 0.338647,
-    "clipt": 0.977295,
+    "clipsim": 0.162573,
+    "clipt": 0.966227,
     "clipsim_per_video": [
       {
         "video": "0.mp4",
-        "clipsim": 0.387207
+        "clipsim": 0.377197
       },
       {
         "video": "1.mp4",
-        "clipsim": 0.312256
+        "clipsim": 0.314697
+      },
+      {
+        "video": "10.mp4",
+        "clipsim": 0.233887
+      },
+      {
+        "video": "11.mp4",
+        "clipsim": 0.1427
+      },
+      {
+        "video": "12.mp4",
+        "clipsim": 0.228516
+      },
+      {
+        "video": "13.mp4",
+        "clipsim": 0.082764
+      },
+      {
+        "video": "14.mp4",
+        "clipsim": 0.130005
+      },
+      {
+        "video": "15.mp4",
+        "clipsim": 0.225586
+      },
+      {
+        "video": "16.mp4",
+        "clipsim": 0.180542
+      },
+      {
+        "video": "17.mp4",
+        "clipsim": 0.250732
+      },
+      {
+        "video": "18.mp4",
+        "clipsim": 0.193115
+      },
+      {
+        "video": "19.mp4",
+        "clipsim": 0.130737
       },
       {
         "video": "2.mp4",
-        "clipsim": 0.36792
+        "clipsim": 0.149292
+      },
+      {
+        "video": "20.mp4",
+        "clipsim": 0.207031
+      },
+      {
+        "video": "21.mp4",
+        "clipsim": 0.260498
+      },
+      {
+        "video": "22.mp4",
+        "clipsim": 0.12793
+      },
+      {
+        "video": "23.mp4",
+        "clipsim": 0.186157
+      },
+      {
+        "video": "24.mp4",
+        "clipsim": 0.111511
+      },
+      {
+        "video": "25.mp4",
+        "clipsim": 0.104004
+      },
+      {
+        "video": "26.mp4",
+        "clipsim": 0.07782
+      },
+      {
+        "video": "27.mp4",
+        "clipsim": 0.148315
+      },
+      {
+        "video": "28.mp4",
+        "clipsim": 0.161743
+      },
+      {
+        "video": "29.mp4",
+        "clipsim": 0.174438
       },
       {
         "video": "3.mp4",
-        "clipsim": 0.323975
+        "clipsim": 0.075928
+      },
+      {
+        "video": "30.mp4",
+        "clipsim": 0.198242
+      },
+      {
+        "video": "31.mp4",
+        "clipsim": 0.218506
+      },
+      {
+        "video": "32.mp4",
+        "clipsim": 0.182251
+      },
+      {
+        "video": "33.mp4",
+        "clipsim": 0.191284
+      },
+      {
+        "video": "34.mp4",
+        "clipsim": 0.169067
+      },
+      {
+        "video": "35.mp4",
+        "clipsim": 0.12793
+      },
+      {
+        "video": "36.mp4",
+        "clipsim": 0.165161
+      },
+      {
+        "video": "37.mp4",
+        "clipsim": 0.140625
+      },
+      {
+        "video": "38.mp4",
+        "clipsim": 0.112976
+      },
+      {
+        "video": "39.mp4",
+        "clipsim": 0.174927
       },
       {
         "video": "4.mp4",
-        "clipsim": 0.321777
+        "clipsim": 0.098511
+      },
+      {
+        "video": "40.mp4",
+        "clipsim": 0.169678
+      },
+      {
+        "video": "41.mp4",
+        "clipsim": 0.187256
+      },
+      {
+        "video": "42.mp4",
+        "clipsim": 0.070923
+      },
+      {
+        "video": "43.mp4",
+        "clipsim": 0.130859
+      },
+      {
+        "video": "44.mp4",
+        "clipsim": 0.038208
+      },
+      {
+        "video": "45.mp4",
+        "clipsim": 0.109619
+      },
+      {
+        "video": "46.mp4",
+        "clipsim": 0.216187
+      },
+      {
+        "video": "47.mp4",
+        "clipsim": 0.129395
       },
       {
         "video": "5.mp4",
-        "clipsim": 0.329346
+        "clipsim": 0.133423
       },
       {
         "video": "6.mp4",
-        "clipsim": 0.305664
+        "clipsim": 0.098511
       },
       {
         "video": "7.mp4",
-        "clipsim": 0.338867
+        "clipsim": 0.187256
       },
       {
         "video": "8.mp4",
-        "clipsim": 0.382324
+        "clipsim": 0.128662
       },
       {
         "video": "9.mp4",
-        "clipsim": 0.317139
+        "clipsim": 0.148926
       }
     ],
     "clipt_per_video": [
       {
         "video": "0.mp4",
-        "clipt": 0.977051
+        "clipt": 0.972656
       },
       {
         "video": "1.mp4",
-        "clipt": 0.983398
+        "clipt": 0.984375
       },
       {
-        "video": "2.mp4",
-        "clipt": 0.979492
+        "video": "10.mp4",
+        "clipt": 0.927734
       },
       {
-        "video": "3.mp4",
-        "clipt": 0.98584
+        "video": "11.mp4",
+        "clipt": 0.972656
       },
       {
-        "video": "4.mp4",
-        "clipt": 0.987793
+        "video": "12.mp4",
+        "clipt": 0.935547
       },
       {
-        "video": "5.mp4",
+        "video": "13.mp4",
+        "clipt": 0.949707
+      },
+      {
+        "video": "14.mp4",
+        "clipt": 0.942871
+      },
+      {
+        "video": "15.mp4",
+        "clipt": 0.945801
+      },
+      {
+        "video": "16.mp4",
+        "clipt": 0.977539
+      },
+      {
+        "video": "17.mp4",
+        "clipt": 0.982422
+      },
+      {
+        "video": "18.mp4",
+        "clipt": 0.958984
+      },
+      {
+        "video": "19.mp4",
         "clipt": 0.973145
       },
       {
-        "video": "6.mp4",
-        "clipt": 0.957031
+        "video": "2.mp4",
+        "clipt": 0.964355
       },
       {
-        "video": "7.mp4",
-        "clipt": 0.976074
+        "video": "20.mp4",
+        "clipt": 0.968262
       },
       {
-        "video": "8.mp4",
+        "video": "21.mp4",
+        "clipt": 0.954102
+      },
+      {
+        "video": "22.mp4",
+        "clipt": 0.967285
+      },
+      {
+        "video": "23.mp4",
+        "clipt": 0.981445
+      },
+      {
+        "video": "24.mp4",
+        "clipt": 0.925293
+      },
+      {
+        "video": "25.mp4",
+        "clipt": 0.973633
+      },
+      {
+        "video": "26.mp4",
+        "clipt": 0.963867
+      },
+      {
+        "video": "27.mp4",
+        "clipt": 0.95459
+      },
+      {
+        "video": "28.mp4",
+        "clipt": 0.931152
+      },
+      {
+        "video": "29.mp4",
+        "clipt": 0.96875
+      },
+      {
+        "video": "3.mp4",
+        "clipt": 0.984375
+      },
+      {
+        "video": "30.mp4",
+        "clipt": 0.990723
+      },
+      {
+        "video": "31.mp4",
+        "clipt": 0.955078
+      },
+      {
+        "video": "32.mp4",
+        "clipt": 0.961426
+      },
+      {
+        "video": "33.mp4",
+        "clipt": 0.894531
+      },
+      {
+        "video": "34.mp4",
         "clipt": 0.971191
       },
       {
+        "video": "35.mp4",
+        "clipt": 0.96875
+      },
+      {
+        "video": "36.mp4",
+        "clipt": 0.973633
+      },
+      {
+        "video": "37.mp4",
+        "clipt": 0.974609
+      },
+      {
+        "video": "38.mp4",
+        "clipt": 0.977539
+      },
+      {
+        "video": "39.mp4",
+        "clipt": 0.979004
+      },
+      {
+        "video": "4.mp4",
+        "clipt": 0.980469
+      },
+      {
+        "video": "40.mp4",
+        "clipt": 0.983887
+      },
+      {
+        "video": "41.mp4",
+        "clipt": 0.960449
+      },
+      {
+        "video": "42.mp4",
+        "clipt": 0.961426
+      },
+      {
+        "video": "43.mp4",
+        "clipt": 0.97998
+      },
+      {
+        "video": "44.mp4",
+        "clipt": 0.97168
+      },
+      {
+        "video": "45.mp4",
+        "clipt": 0.99707
+      },
+      {
+        "video": "46.mp4",
+        "clipt": 0.952637
+      },
+      {
+        "video": "47.mp4",
+        "clipt": 0.990723
+      },
+      {
+        "video": "5.mp4",
+        "clipt": 0.977539
+      },
+      {
+        "video": "6.mp4",
+        "clipt": 0.991699
+      },
+      {
+        "video": "7.mp4",
+        "clipt": 0.984375
+      },
+      {
+        "video": "8.mp4",
+        "clipt": 0.97998
+      },
+      {
         "video": "9.mp4",
-        "clipt": 0.981934
+        "clipt": 0.959961
       }
     ]
   }
