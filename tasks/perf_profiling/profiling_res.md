@@ -111,11 +111,47 @@ Attention Proportion Report (sdpa)
 | 16384 | 209.2 | 587.8 | 2.81× |
 | 32768 | 212.0 | 647.2 | 3.05× |
 
+### Hardware Theoretical Peaks
+
+RTX 5090 specs (from [NVIDIA official](https://www.nvidia.com/en-us/geforce/graphics-cards/compare/#50-series)):
+
+| Spec | Standard RTX 5090 | Our RTX 5090 D (measured) |
+|---|---|---|
+| SMs | 170 | 170 (identical) |
+| CUDA Cores | 21,760 | 21,760 |
+| Official Boost Clock | 2.41 GHz | N/A (not published) |
+| Sustained clock (GEMM load) | — | ~2.67 GHz |
+| TGP | 575 W | 600 W |
+| VRAM | 32 GB GDDR7 | 32 GB GDDR7 |
+| AI TOPS (FP4 sparse) | 3,352 | — |
+
+Theoretical tensor core peaks (at standard 2.41 GHz boost):
+
+| Precision | Dense (TFLOPS) | Sparse (TFLOPS) |
+|---|---|---|
+| FP16 | 419.5 | 839.1 |
+| FP8 | 839.1 | 1,678.1 |
+| FP4 | 1,678.1 | 3,356.3 (≈ NVIDIA spec 3,352) |
+
+**Key finding:** The 5090 D has identical SM count (170) to the standard 5090 and actually sustains a *higher* clock (~2.67 GHz vs 2.41 GHz spec) with a higher power limit (600W vs 575W). **Hardware differences do NOT explain the gap.**
+
 #### Analysis: gap vs paper's 1038 TOPS claim
 
-The paper reports **1038 TOPS** peak for Sage3 on RTX 5090. Our measurement peaks at **714.5 TFLOPS** (non-causal, seq_len=32768, headdim=128). Possible remaining factors:
+The paper reports **1038 TOPS** peak for Sage3 on RTX 5090. Our measurement peaks at **714.5 TFLOPS** (non-causal, seq_len=32768, headdim=128).
 
-1. **RTX 5090 vs RTX 5090 D** — our GPU is the "D" variant (China-specific, potentially lower clocks or fewer SMs). The paper benchmarks on a standard RTX 5090.
-2. **Longer seq_len** — the paper's figures likely extend beyond 32768 where throughput continues to increase.
-3. **Benchmark methodology** — the paper may use CUDA event timing rather than `torch.utils.benchmark.Timer` which includes host-side overhead.
-4. **Driver/CUDA version** — kernel performance can vary across driver versions.
+Hardware utilization of our SA3 benchmark (714.5 TFLOPS):
+- vs FP8 dense peak @ 2.67 GHz (929.6): **76.9%** — indicates strong FP8-level utilization
+- vs FP4 dense peak @ 2.67 GHz (1859.2): **38.4%**
+- SA3 uses FP4 for QK matmul + FP8 for PV matmul, so effective peak lies between FP8 and FP4
+
+Paper's 1038 TOPS on standard RTX 5090:
+- vs FP4 dense @ 2.41 GHz (1678.1): **61.9%**
+- This exceeds FP8 dense peak (839.1), confirming the paper's kernel heavily leverages FP4 tensor cores
+
+Possible remaining factors for the 714.5 → 1038 gap:
+
+1. ~~RTX 5090 vs RTX 5090 D hardware~~ — **ruled out** (same 170 SMs, higher clock on D variant)
+2. **Longer seq_len** — the paper's figures likely extend beyond 32768 where throughput continues to increase
+3. **Kernel version / build optimization** — our build may not include the latest kernel optimizations from the paper
+4. **Benchmark methodology** — the paper may use CUDA event timing rather than `torch.utils.benchmark.Timer` which includes host-side overhead
+5. **Driver/CUDA version** — kernel performance can vary across driver versions
