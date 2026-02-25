@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     if args.model == "cogvideox-2b":
         model_path = "/storage/yiliu7/THUDM/CogVideoX-2b"
-        model_path = "/mnt/disk1/yiliu7/models/"
+        model_path = "/mnt/disk1/yiliu7/models/zai-org/CogVideoX-2b"
         num_frames = 49
         torch_dtype = torch.float16
     else:
