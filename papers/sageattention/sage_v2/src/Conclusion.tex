@@ -1,0 +1,14 @@
+
+\section{Conclusion}
+\vspace{-.1em}
+We introduce \our, an efficient and accurate quantized attention. First, we propose to quantize matrices $(Q, K)$ in a thread-level granularity and $(\widetilde P, V)$ to FP8. Second, we propose a method to smooth $Q$, enhancing the accuracy of $QK^\top$. Third, we propose a two-level accumulation strategy to enhance the accuracy of FP8 $\widetilde PV$. \our is faster than FlashAttention2 and xformers by approximately \textbf{3x} and \textbf{4.5x}, respectively. Moreover, \our matches the speed of FlashAttention3(fp8) on the Hopper GPUs, but offers significantly higher accuracy. Extensive experiments confirm that our approach maintains end-to-end metrics across language, image, and video generation models. 
+
+
+\section*{Acknowledgment}
+This work was supported by the NSFC Projects (Nos. 92270001, 62376131). J.Z is also supported by the XPlorer Prize.
+
+
+
+
+\section*{Impact Statement}
+This paper presents work that aims to advance the field of Machine Learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here.

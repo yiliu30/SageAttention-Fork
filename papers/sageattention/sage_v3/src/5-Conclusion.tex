@@ -1,0 +1,20 @@
+
+% \section{Discussion}
+% Xxx.
+
+
+\section{Related Work}
+Recent efficient attention works~\citep{zhangsurvey} that utilize hardware features to accelerate attention computation methods mainly include the following: FlashAttention~\citep{dao2022flashattention} introduces tiling to reduce the GPU memory I/O between global memory and on-chip SRAM, achieving significant speedup. FlashAttention2~\citep{dao2023flashattention} improves the parallelism and warp partition strategies. FlashAttention3~\citep{shah2024flashattention} exclusively optimizes the kernel speed on the Hopper GPUs. xformers~\citep{xFormers2022} accelerates attention using dedicated CUDA kernels. SageAttention~\citep{2024sageattention} and SageAttention2~\citep{zhang2024sageattention2,zhang2025sageattention2++} accelerate attention using quantization and some novel outlier smoothing techniques. 
+RingAttention~\citep{liuringattention} extends FlashAttention to multi-GPU/Node environments. In these works, although FlashAttention3 proposes a version of \texttt{FP8} attention, it has failed to be applied to video generation models in a plug-and-play way~\citep{zhang2024sageattention2}. Moreover, the \texttt{FP8} attention in FlashAttention3 does not support the backward pass, limiting its applicability to training tasks. Additionally, numerous efficient attention variants have emerged, including linear attention~\citep{wang2020linformer,choromanski2020rethinking,yu2022metaformer,katharopoulos2020transformers,qin2024lightning,yang2024gated} and sparse attention~\citep{zhang2025spargeattn,zhang2025sla,xi2025sparse,yang2025sparse,liu2021swin,chu2021twins,xiao2023efficient,xiao2024infllm,chen2023longlora,jiang2024minference,venkataramanan2023skip,gao2024seerattention,moaattention}. Although these works represent promising research directions, they are orthogonal to our work.
+
+
+
+\section{Conclusions}
+In this paper, we make two key contributions. Firstly, we design \our, the first microscaling \texttt{FP4} attention for inference acceleration, achieving \textbf{1038} \texttt{TOPS} on \texttt{RTX5090}, which is a \textbf{5}$\times$ speedup than the fastest FlashAttention on \texttt{RTX5090}. Experiments show that \our could accelerate various models with no end-to-end quality metrics degradation.
+Secondly, we introduce the first trainable \texttt{8-bit} attention (\sageback) for training acceleration and explore its feasibility in training tasks. We find that the \texttt{8-bit} attention could achieve lossless performance in fine-tuning tasks, but currently has some limitations in pertaining tasks.
+
+\textbf{Future Work.} First, while \sageback demonstrates faster performance than \texttt{FP16} implementation, we observe a noticeable gap between its current speed and theoretical upper bounds. This gap may be caused by suboptimal Triton kernel implementations, which we plan to further optimize. Second, and more importantly, investigating the application of low-bit attention in pretraining tasks presents a promising research direction worthy of exploration.
+
+
+\section*{Acknowledgments}
+This work was supported by the NSFC Projects (Nos. 62550004, 92270001, 62376131). J.Z is also supported by the XPlorer Prize.

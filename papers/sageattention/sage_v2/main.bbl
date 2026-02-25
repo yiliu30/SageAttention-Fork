@@ -1,0 +1,394 @@
+\begin{thebibliography}{77}
+\providecommand{\natexlab}[1]{#1}
+\providecommand{\url}[1]{\texttt{#1}}
+\expandafter\ifx\csname urlstyle\endcsname\relax
+  \providecommand{\doi}[1]{doi: #1}\else
+  \providecommand{\doi}{doi: \begingroup \urlstyle{rm}\Url}\fi
+
+\bibitem[Ashkboos et~al.(2024)Ashkboos, Mohtashami, Croci, Li, Cameron, Jaggi, Alistarh, Hoefler, and Hensman]{ashkboos2024quarot}
+Ashkboos, S., Mohtashami, A., Croci, M.~L., Li, B., Cameron, P., Jaggi, M., Alistarh, D., Hoefler, T., and Hensman, J.
+\newblock Quarot: Outlier-free 4-bit inference in rotated {LLM}s.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024.
+
+\bibitem[Bai et~al.(2024)Bai, Lv, Zhang, Lyu, Tang, Huang, Du, Liu, Zeng, Hou, Dong, Tang, and Li]{bai2023longbench}
+Bai, Y., Lv, X., Zhang, J., Lyu, H., Tang, J., Huang, Z., Du, Z., Liu, X., Zeng, A., Hou, L., Dong, Y., Tang, J., and Li, J.
+\newblock {L}ong{B}ench: A bilingual, multitask benchmark for long context understanding.
+\newblock In \emph{Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  3119--3137, 2024.
+
+\bibitem[{Black Forest Labs}(2023)]{flux}
+{Black Forest Labs}.
+\newblock Flux.
+\newblock \url{https://github.com/black-forest-labs/flux}, 2023.
+
+\bibitem[Chen et~al.(2024)Chen, Qian, Tang, Lai, Liu, Han, and Jia]{chen2023longlora}
+Chen, Y., Qian, S., Tang, H., Lai, X., Liu, Z., Han, S., and Jia, J.
+\newblock Longlora: Efficient fine-tuning of long-context large language models.
+\newblock In \emph{The International Conference on Learning Representations}, 2024.
+
+\bibitem[Choromanski et~al.(2021)Choromanski, Likhosherstov, Dohan, Song, Gane, Sarlos, Hawkins, Davis, Mohiuddin, Kaiser, Belanger, Colwell, and Weller]{choromanski2020rethinking}
+Choromanski, K.~M., Likhosherstov, V., Dohan, D., Song, X., Gane, A., Sarlos, T., Hawkins, P., Davis, J.~Q., Mohiuddin, A., Kaiser, L., Belanger, D.~B., Colwell, L.~J., and Weller, A.
+\newblock Rethinking attention with performers.
+\newblock In \emph{International Conference on Learning Representations}, 2021.
+
+\bibitem[Chu et~al.(2021)Chu, Tian, Wang, Zhang, Ren, Wei, Xia, and Shen]{chu2021twins}
+Chu, X., Tian, Z., Wang, Y., Zhang, B., Ren, H., Wei, X., Xia, H., and Shen, C.
+\newblock Twins: Revisiting the design of spatial attention in vision transformers.
+\newblock In Beygelzimer, A., Dauphin, Y., Liang, P., and Vaughan, J.~W. (eds.), \emph{Advances in Neural Information Processing Systems}, 2021.
+
+\bibitem[Chu et~al.(2024)Chu, Xu, Yang, Wei, Wei, Guo, Leng, Lv, He, Lin, Zhou, and Zhou]{chu2024qwen2audiotechnicalreport}
+Chu, Y., Xu, J., Yang, Q., Wei, H., Wei, X., Guo, Z., Leng, Y., Lv, Y., He, J., Lin, J., Zhou, C., and Zhou, J.
+\newblock Qwen2-audio technical report, 2024.
+
+\bibitem[Dao(2024)]{dao2023flashattention}
+Dao, T.
+\newblock Flashattention-2: Faster attention with better parallelism and work partitioning.
+\newblock In \emph{The Twelfth International Conference on Learning Representations}, 2024.
+
+\bibitem[Dao et~al.(2022)Dao, Fu, Ermon, Rudra, and Re]{dao2022flashattention}
+Dao, T., Fu, D.~Y., Ermon, S., Rudra, A., and Re, C.
+\newblock Flashattention: Fast and memory-efficient exact attention with {IO}-awareness.
+\newblock In Oh, A.~H., Agarwal, A., Belgrave, D., and Cho, K. (eds.), \emph{Advances in Neural Information Processing Systems}, 2022.
+
+\bibitem[DeepSeek-AI et~al.(2024)DeepSeek-AI, Liu, Feng, Xue, Wang, Wu, Lu, Zhao, Deng, Zhang, Ruan, Dai, Guo, Yang, Chen, Ji, Li, Lin, Dai, Luo, Hao, Chen, Li, Zhang, Bao, Xu, Wang, Zhang, Ding, Xin, Gao, Li, Qu, Cai, Liang, Guo, Ni, Li, Wang, Chen, Chen, Yuan, Qiu, Li, Song, Dong, Hu, Gao, Guan, Huang, Yu, Wang, Zhang, Xu, Xia, Zhao, Wang, Zhang, Li, Wang, Zhang, Zhang, Tang, Li, Tian, Huang, Wang, Zhang, Wang, Zhu, Chen, Du, Chen, Jin, Ge, Zhang, Pan, Wang, Xu, Zhang, Chen, Li, Lu, Zhou, Chen, Wu, Ye, Ye, Ma, Wang, Zhou, Yu, Zhou, Pan, Wang, Yun, Pei, Sun, Xiao, Zeng, Zhao, An, Liu, Liang, Gao, Yu, Zhang, Li, Jin, Wang, Bi, Liu, Wang, Shen, Chen, Zhang, Chen, Nie, Sun, Wang, Cheng, Liu, Xie, Liu, Yu, Song, Shan, Zhou, Yang, Li, Su, Lin, Li, Wang, Wei, Zhu, Zhang, Xu, Xu, Huang, Li, Zhao, Sun, Li, Wang, Yu, Zheng, Zhang, Shi, Xiong, He, Tang, Piao, Wang, Tan, Ma, Liu, Guo, Wu, Ou, Zhu, Wang, Gong, Zou, He, Zha, Xiong, Ma, Yan, Luo, You, Liu, Zhou, Wu, Ren, Ren, Sha, Fu, Xu, Huang, Zhang, Xie, Zhang, Hao, Gou, Ma, Yan, Shao, Xu, Wu, Zhang, Li, Gu, Zhu, Liu, Li, Xie, Song, Gao, and Pan]{deepseekai2024deepseekv3technicalreport}
+DeepSeek-AI, Liu, A., Feng, B., Xue, B., Wang, B., Wu, B., Lu, C., Zhao, C., Deng, C., Zhang, C., Ruan, C., Dai, D., Guo, D., Yang, D., Chen, D., Ji, D., Li, E., Lin, F., Dai, F., Luo, F., Hao, G., Chen, G., Li, G., Zhang, H., Bao, H., Xu, H., Wang, H., Zhang, H., Ding, H., Xin, H., Gao, H., Li, H., Qu, H., Cai, J.~L., Liang, J., Guo, J., Ni, J., Li, J., Wang, J., Chen, J., Chen, J., Yuan, J., Qiu, J., Li, J., Song, J., Dong, K., Hu, K., Gao, K., Guan, K., Huang, K., Yu, K., Wang, L., Zhang, L., Xu, L., Xia, L., Zhao, L., Wang, L., Zhang, L., Li, M., Wang, M., Zhang, M., Zhang, M., Tang, M., Li, M., Tian, N., Huang, P., Wang, P., Zhang, P., Wang, Q., Zhu, Q., Chen, Q., Du, Q., Chen, R.~J., Jin, R.~L., Ge, R., Zhang, R., Pan, R., Wang, R., Xu, R., Zhang, R., Chen, R., Li, S.~S., Lu, S., Zhou, S., Chen, S., Wu, S., Ye, S., Ye, S., Ma, S., Wang, S., Zhou, S., Yu, S., Zhou, S., Pan, S., Wang, T., Yun, T., Pei, T., Sun, T., Xiao, W.~L., Zeng, W., Zhao, W., An, W., Liu, W., Liang, W., Gao, W., Yu, W., Zhang, W., Li, X.~Q., Jin, X., Wang, X., Bi, X., Liu, X., Wang, X., Shen, X., Chen, X., Zhang, X., Chen, X., Nie, X., Sun, X., Wang, X., Cheng, X., Liu, X., Xie, X., Liu, X., Yu, X., Song, X., Shan, X., Zhou, X., Yang, X., Li, X., Su, X., Lin, X., Li, Y.~K., Wang, Y.~Q., Wei, Y.~X., Zhu, Y.~X., Zhang, Y., Xu, Y., Xu, Y., Huang, Y., Li, Y., Zhao, Y., Sun, Y., Li, Y., Wang, Y., Yu, Y., Zheng, Y., Zhang, Y., Shi, Y., Xiong, Y., He, Y., Tang, Y., Piao, Y., Wang, Y., Tan, Y., Ma, Y., Liu, Y., Guo, Y., Wu, Y., Ou, Y., Zhu, Y., Wang, Y., Gong, Y., Zou, Y., He, Y., Zha, Y., Xiong, Y., Ma, Y., Yan, Y., Luo, Y., You, Y., Liu, Y., Zhou, Y., Wu, Z.~F., Ren, Z.~Z., Ren, Z., Sha, Z., Fu, Z., Xu, Z., Huang, Z., Zhang, Z., Xie, Z., Zhang, Z., Hao, Z., Gou, Z., Ma, Z., Yan, Z., Shao, Z., Xu, Z., Wu, Z., Zhang, Z., Li, Z., Gu, Z., Zhu, Z., Liu, Z., Li, Z., Xie, Z., Song, Z., Gao, Z., and Pan, Z.
+\newblock Deepseek-v3 technical report.
+\newblock \emph{arXiv preprint arXiv:2412.19437}, 2024.
+
+\bibitem[Deng et~al.(2009)Deng, Dong, Socher, Li, Li, and Fei-Fei]{deng2009imagenet}
+Deng, J., Dong, W., Socher, R., Li, L.-J., Li, K., and Fei-Fei, L.
+\newblock Imagenet: A large-scale hierarchical image database.
+\newblock In \emph{2009 IEEE conference on computer vision and pattern recognition}, pp.\  248--255. Ieee, 2009.
+
+\bibitem[Dettmers et~al.(2023)Dettmers, Pagnoni, Holtzman, and Zettlemoyer]{dettmers2023qlora}
+Dettmers, T., Pagnoni, A., Holtzman, A., and Zettlemoyer, L.
+\newblock {QL}o{RA}: Efficient finetuning of quantized {LLM}s.
+\newblock In \emph{Thirty-seventh Conference on Neural Information Processing Systems}, 2023.
+
+\bibitem[Dubey et~al.(2024)Dubey, Jauhri, Pandey, Kadian, Al-Dahle, Letman, Mathur, Schelten, Yang, Fan, et~al.]{llama31model}
+Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et~al.
+\newblock The llama 3 herd of models.
+\newblock \emph{arXiv preprint arXiv:2407.21783}, 2024.
+
+\bibitem[Fu et~al.(2024)Fu, Huang, Ning, Zhang, Chen, Wu, Wang, Huang, Li, Yan, Dai, Yang, and Wang]{moaattention}
+Fu, T., Huang, H., Ning, X., Zhang, G., Chen, B., Wu, T., Wang, H., Huang, Z., Li, S., Yan, S., Dai, G., Yang, H., and Wang, Y.
+\newblock Moa: Mixture of sparse attention for automatic large language model compression.
+\newblock \emph{arXiv preprint arXiv:2406.14909}, 2024.
+
+\bibitem[Gao et~al.(2024)Gao, Zeng, Du, Cao, So, Cao, Yang, and Yang]{gao2024seerattention}
+Gao, Y., Zeng, Z., Du, D., Cao, S., So, H. K.-H., Cao, T., Yang, F., and Yang, M.
+\newblock Seerattention: Learning intrinsic sparse attention in your llms.
+\newblock \emph{arXiv preprint arXiv:2410.13276}, 2024.
+
+\bibitem[GLM et~al.(2024)GLM, Zeng, Xu, Wang, Zhang, Yin, Rojas, Feng, Zhao, Lai, Yu, Wang, Sun, Zhang, Cheng, Gui, Tang, Zhang, Li, Zhao, Wu, Zhong, Liu, Huang, Zhang, Zheng, Lu, Duan, Zhang, Cao, Yang, Tam, Zhao, Liu, Xia, Zhang, Gu, Lv, Liu, Liu, Yang, Song, Zhang, An, Xu, Niu, Yang, Li, Bai, Dong, Qi, Wang, Yang, Du, Hou, and Wang]{glm2024chatglm}
+GLM, T., Zeng, A., Xu, B., Wang, B., Zhang, C., Yin, D., Rojas, D., Feng, G., Zhao, H., Lai, H., Yu, H., Wang, H., Sun, J., Zhang, J., Cheng, J., Gui, J., Tang, J., Zhang, J., Li, J., Zhao, L., Wu, L., Zhong, L., Liu, M., Huang, M., Zhang, P., Zheng, Q., Lu, R., Duan, S., Zhang, S., Cao, S., Yang, S., Tam, W.~L., Zhao, W., Liu, X., Xia, X., Zhang, X., Gu, X., Lv, X., Liu, X., Liu, X., Yang, X., Song, X., Zhang, X., An, Y., Xu, Y., Niu, Y., Yang, Y., Li, Y., Bai, Y., Dong, Y., Qi, Z., Wang, Z., Yang, Z., Du, Z., Hou, Z., and Wang, Z.
+\newblock Chatglm: A family of large language models from glm-130b to glm-4 all tools.
+\newblock \emph{arXiv preprint arXiv:2406.12793}, 2024.
+
+\bibitem[Hendrycks et~al.(2021{\natexlab{a}})Hendrycks, Basart, Mu, Kadavath, Wang, Dorundo, Desai, Zhu, Parajuli, Guo, et~al.]{hendrycks2021rendition}
+Hendrycks, D., Basart, S., Mu, N., Kadavath, S., Wang, F., Dorundo, E., Desai, R., Zhu, T., Parajuli, S., Guo, M., et~al.
+\newblock The many faces of robustness: A critical analysis of out-of-distribution generalization.
+\newblock In \emph{Proceedings of the IEEE/CVF international conference on computer vision}, pp.\  8340--8349, 2021{\natexlab{a}}.
+
+\bibitem[Hendrycks et~al.(2021{\natexlab{b}})Hendrycks, Burns, Basart, Zou, Mazeika, Song, and Steinhardt]{2020mmlu}
+Hendrycks, D., Burns, C., Basart, S., Zou, A., Mazeika, M., Song, D., and Steinhardt, J.
+\newblock Measuring massive multitask language understanding.
+\newblock \emph{Proceedings of the International Conference on Learning Representations (ICLR)}, 2021{\natexlab{b}}.
+
+\bibitem[Hessel et~al.(2021)Hessel, Holtzman, Forbes, Le~Bras, and Choi]{hessel2021clipscore}
+Hessel, J., Holtzman, A., Forbes, M., Le~Bras, R., and Choi, Y.
+\newblock Clipscore: A reference-free evaluation metric for image captioning.
+\newblock In \emph{Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing}, pp.\  7514--7528, 2021.
+
+\bibitem[Heusel et~al.(2017)Heusel, Ramsauer, Unterthiner, Nessler, and Hochreiter]{heusel2017gans}
+Heusel, M., Ramsauer, H., Unterthiner, T., Nessler, B., and Hochreiter, S.
+\newblock Gans trained by a two time-scale update rule converge to a local nash equilibrium.
+\newblock \emph{Advances in neural information processing systems}, 30, 2017.
+
+\bibitem[Hu et~al.(2025)Hu, Huang, Liang, Chen, Zhang, Zhu, and Chen]{hu2025quant}
+Hu, Y., Huang, W., Liang, Z., Chen, C., Zhang, J., Zhu, J., and Chen, J.
+\newblock Identifying sensitive weights via post-quantization integral.
+\newblock \emph{arXiv preprint arXiv:2503.01901}, 2025.
+
+\bibitem[Jelinek et~al.(1977)Jelinek, Mercer, Bahl, and Baker]{jelinek1977perplexity}
+Jelinek, F., Mercer, R.~L., Bahl, L.~R., and Baker, J.~K.
+\newblock Perplexity—a measure of the difficulty of speech recognition tasks.
+\newblock \emph{The Journal of the Acoustical Society of America}, 62\penalty0 (S1):\penalty0 S63--S63, 1977.
+
+\bibitem[Jiang et~al.(2024)Jiang, LI, Zhang, Wu, Luo, Ahn, Han, Abdi, Li, Lin, Yang, and Qiu]{jiang2024minference}
+Jiang, H., LI, Y., Zhang, C., Wu, Q., Luo, X., Ahn, S., Han, Z., Abdi, A.~H., Li, D., Lin, C.-Y., Yang, Y., and Qiu, L.
+\newblock {MI}nference 1.0: Accelerating pre-filling for long-context {LLM}s via dynamic sparse attention.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024.
+
+\bibitem[Kamradt(2023)]{LLMTest_NeedleInAHaystack}
+Kamradt, G.
+\newblock Llmtest needle in a haystack - pressure testing llms.
+\newblock \url{https://github.com/gkamradt/LLMTest_NeedleInAHaystack}, 2023.
+
+\bibitem[Katharopoulos et~al.(2020)Katharopoulos, Vyas, Pappas, and Fleuret]{katharopoulos2020transformers}
+Katharopoulos, A., Vyas, A., Pappas, N., and Fleuret, F.
+\newblock Transformers are rnns: Fast autoregressive transformers with linear attention.
+\newblock In \emph{International conference on machine learning}, pp.\  5156--5165. PMLR, 2020.
+
+\bibitem[Kong et~al.(2024)Kong, Tian, Zhang, Min, Dai, Zhou, Xiong, Li, Wu, Zhang, Wu, Lin, Wang, Wang, Li, Huang, Yang, Tan, Wang, Song, Bai, Wu, Xue, Wang, Yuan, Wang, Liu, Li, Li, Wang, Yu, Deng, Li, Long, Chen, Cui, Peng, Yu, He, Xu, Zhou, Xu, Tao, Lu, Liu, Zhou, Wang, Yang, Wang, Liu, Jiang, and Zhong]{kong2024hunyuanvideo}
+Kong, W., Tian, Q., Zhang, Z., Min, R., Dai, Z., Zhou, J., Xiong, J., Li, X., Wu, B., Zhang, J., Wu, K., Lin, Q., Wang, A., Wang, A., Li, C., Huang, D., Yang, F., Tan, H., Wang, H., Song, J., Bai, J., Wu, J., Xue, J., Wang, J., Yuan, J., Wang, K., Liu, M., Li, P., Li, S., Wang, W., Yu, W., Deng, X., Li, Y., Long, Y., Chen, Y., Cui, Y., Peng, Y., Yu, Z., He, Z., Xu, Z., Zhou, Z., Xu, Z., Tao, Y., Lu, Q., Liu, S., Zhou, D., Wang, H., Yang, Y., Wang, D., Liu, Y., Jiang, J., and Zhong, C.
+\newblock Hunyuanvideo: A systematic framework for large video generative models.
+\newblock \emph{arXiv preprint arXiv:2412.03603}, 2024.
+
+\bibitem[Lefaudeux et~al.(2022)Lefaudeux, Massa, Liskovich, Xiong, Caggiano, Naren, Xu, Hu, Tintore, Zhang, Labatut, Haziza, Wehrstedt, Reizenstein, and Sizov]{xFormers2022}
+Lefaudeux, B., Massa, F., Liskovich, D., Xiong, W., Caggiano, V., Naren, S., Xu, M., Hu, J., Tintore, M., Zhang, S., Labatut, P., Haziza, D., Wehrstedt, L., Reizenstein, J., and Sizov, G.
+\newblock xformers: A modular and hackable transformer modelling library.
+\newblock \url{https://github.com/facebookresearch/xformers}, 2022.
+
+\bibitem[Li et~al.(2024)Li, Kamko, Akhgari, Sabet, Xu, and Doshi]{li2024playground}
+Li, D., Kamko, A., Akhgari, E., Sabet, A., Xu, L., and Doshi, S.
+\newblock Playground v2.5: Three insights towards enhancing aesthetic quality in text-to-image generation.
+\newblock \emph{arXiv preprint arXiv:2402.17245}, 2024.
+
+\bibitem[Li et~al.(2022)Li, Wang, Peng, Song, Liu, Li, and Qiao]{liuniformer}
+Li, K., Wang, Y., Peng, G., Song, G., Liu, Y., Li, H., and Qiao, Y.
+\newblock Uniformer: Unified transformer for efficient spatial-temporal representation learning.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+
+\bibitem[Lin et~al.(2025)Lin, Tang, Yang, Zhang, Xiao, Gan, and Han]{lin2024qserve}
+Lin, Y., Tang, H., Yang, S., Zhang, Z., Xiao, G., Gan, C., and Han, S.
+\newblock {QS}erve:w4a8{KV}4 quantization and system co-design for efficient {LLM} serving.
+\newblock In \emph{Eighth Conference on Machine Learning and Systems}, 2025.
+
+\bibitem[Liu et~al.(2024)Liu, Cun, Liu, Wang, Zhang, Chen, Liu, Zeng, Chan, and Shan]{liu2024evalcrafter}
+Liu, Y., Cun, X., Liu, X., Wang, X., Zhang, Y., Chen, H., Liu, Y., Zeng, T., Chan, R., and Shan, Y.
+\newblock Evalcrafter: Benchmarking and evaluating large video generation models.
+\newblock In \emph{Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition}, pp.\  22139--22149, 2024.
+
+\bibitem[Liu et~al.(2021)Liu, Lin, Cao, Hu, Wei, Zhang, Lin, and Guo]{liu2021swin}
+Liu, Z., Lin, Y., Cao, Y., Hu, H., Wei, Y., Zhang, Z., Lin, S., and Guo, B.
+\newblock Swin transformer: Hierarchical vision transformer using shifted windows.
+\newblock In \emph{Proceedings of the IEEE/CVF international conference on computer vision}, pp.\  10012--10022, 2021.
+
+\bibitem[Merity et~al.(2022)Merity, Xiong, Bradbury, and Socher]{merity2022pointer}
+Merity, S., Xiong, C., Bradbury, J., and Socher, R.
+\newblock Pointer sentinel mixture models.
+\newblock In \emph{International Conference on Learning Representations}, 2022.
+
+\bibitem[Milakov \& Gimelshein(2018)Milakov and Gimelshein]{milakov2018online}
+Milakov, M. and Gimelshein, N.
+\newblock Online normalizer calculation for softmax.
+\newblock \emph{arXiv preprint arXiv:1805.02867}, 2018.
+
+\bibitem[{NVIDIA}()]{ptx}
+{NVIDIA}.
+\newblock Parallel thread execution isa version 8.5.
+\newblock \url{https://docs.nvidia.com/cuda/parallel-thread-execution/}.
+
+\bibitem[NVIDIA(2023)]{cutlass}
+NVIDIA.
+\newblock {CUTLASS: CUDA Templates for Linear Algebra Subroutines and Solvers}.
+\newblock GitHub repository, 2023.
+\newblock URL \url{https://github.com/NVIDIA/cutlass}.
+
+\bibitem[Panayotov et~al.(2015)Panayotov, Chen, Povey, and Khudanpur]{Librispeech}
+Panayotov, V., Chen, G., Povey, D., and Khudanpur, S.
+\newblock Librispeech: An asr corpus based on public domain audio books.
+\newblock In \emph{2015 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP)}, pp.\  5206--5210, 2015.
+\newblock \doi{10.1109/ICASSP.2015.7178964}.
+
+\bibitem[Paperno et~al.(2016)Paperno, Kruszewski, Lazaridou, Pham, Bernardi, Pezzelle, Baroni, Boleda, and Fern{\'a}ndez]{paperno2016lambada}
+Paperno, D., Kruszewski, G., Lazaridou, A., Pham, N.-Q., Bernardi, R., Pezzelle, S., Baroni, M., Boleda, G., and Fern{\'a}ndez, R.
+\newblock The lambada dataset: Word prediction requiring a broad discourse context.
+\newblock In \emph{Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  1525--1534, 2016.
+
+\bibitem[Salimans et~al.(2016)Salimans, Goodfellow, Zaremba, Cheung, Radford, and Chen]{salimans2016improved}
+Salimans, T., Goodfellow, I., Zaremba, W., Cheung, V., Radford, A., and Chen, X.
+\newblock Improved techniques for training gans.
+\newblock \emph{Advances in neural information processing systems}, 29, 2016.
+
+\bibitem[Shah et~al.(2024)Shah, Bikshandi, Zhang, Thakkar, Ramani, and Dao]{shah2024flashattention}
+Shah, J., Bikshandi, G., Zhang, Y., Thakkar, V., Ramani, P., and Dao, T.
+\newblock Flashattention-3: Fast and accurate attention with asynchrony and low-precision.
+\newblock In \emph{The Thirty-eighth Annual Conference on Neural Information Processing Systems}, 2024.
+
+\bibitem[{Stability AI}(2023)]{stable_diffusion_3_5}
+{Stability AI}.
+\newblock Introducing stable diffusion 3.5.
+\newblock \url{https://stability.ai/news/introducing-stable-diffusion-3-5}, 2023.
+
+\bibitem[Team(2024)]{genmo2024mochi}
+Team, G.
+\newblock Mochi 1.
+\newblock \url{https://github.com/genmoai/models}, 2024.
+
+\bibitem[Touvron et~al.(2023)Touvron, Martin, Stone, Albert, Almahairi, Babaei, Bashlykov, Batra, Bhargava, Bhosale, et~al.]{touvron2023llama2}
+Touvron, H., Martin, L., Stone, K., Albert, P., Almahairi, A., Babaei, Y., Bashlykov, N., Batra, S., Bhargava, P., Bhosale, S., et~al.
+\newblock Llama 2: Open foundation and fine-tuned chat models.
+\newblock \emph{arXiv preprint arXiv:2307.09288}, 2023.
+
+\bibitem[Vaswani(2017)]{vaswani2017attention}
+Vaswani, A.
+\newblock Attention is all you need.
+\newblock \emph{Advances in Neural Information Processing Systems}, 2017.
+
+\bibitem[Venkataramanan et~al.(2024)Venkataramanan, Ghodrati, Asano, Porikli, and Habibian]{venkataramanan2023skip}
+Venkataramanan, S., Ghodrati, A., Asano, Y.~M., Porikli, F., and Habibian, A.
+\newblock Skip-attention: Improving vision transformers by paying less attention.
+\newblock In \emph{The Twelfth International Conference on Learning Representations}, 2024.
+
+\bibitem[Wang et~al.(2019)Wang, Ge, Lipton, and Xing]{wang2019sketch}
+Wang, H., Ge, S., Lipton, Z., and Xing, E.~P.
+\newblock Learning robust global representations by penalizing local predictive power.
+\newblock \emph{Advances in Neural Information Processing Systems}, 32, 2019.
+
+\bibitem[Wang et~al.(2020)Wang, Li, Khabsa, Fang, and Ma]{wang2020linformer}
+Wang, S., Li, B.~Z., Khabsa, M., Fang, H., and Ma, H.
+\newblock Linformer: Self-attention with linear complexity.
+\newblock \emph{arXiv preprint arXiv:2006.04768}, 2020.
+
+\bibitem[Wang et~al.(2024)Wang, Chen, Chen, Zhu, and Chen]{wang2024framebridge}
+Wang, Y., Chen, Z., Chen, X., Zhu, J., and Chen, J.
+\newblock Framebridge: Improving image-to-video generation with bridge models.
+\newblock \emph{arXiv preprint arXiv:2410.15371}, 2024.
+
+\bibitem[Wightman(2019)]{rw2019timm}
+Wightman, R.
+\newblock Pytorch image models.
+\newblock \url{https://github.com/rwightman/pytorch-image-models}, 2019.
+
+\bibitem[Wu et~al.(2023)Wu, Zhang, Liao, Chen, Hou, Wang, Sun, Yan, and Lin]{wu2023exploring}
+Wu, H., Zhang, E., Liao, L., Chen, C., Hou, J., Wang, A., Sun, W., Yan, Q., and Lin, W.
+\newblock Exploring video quality assessment on user generated contents from aesthetic and technical perspectives.
+\newblock In \emph{Proceedings of the IEEE/CVF International Conference on Computer Vision}, pp.\  20144--20154, 2023.
+
+\bibitem[Xi et~al.(2025)Xi, Yang, Zhao, Xu, Li, Li, Lin, Cai, Zhang, Li, et~al.]{xi2025sparse}
+Xi, H., Yang, S., Zhao, Y., Xu, C., Li, M., Li, X., Lin, Y., Cai, H., Zhang, J., Li, D., et~al.
+\newblock Sparse videogen: Accelerating video diffusion transformers with spatial-temporal sparsity.
+\newblock In \emph{International Conference on Machine Learning (ICML)}, 2025.
+
+\bibitem[Xiao et~al.(2024{\natexlab{a}})Xiao, Zhang, Han, Xiao, Lin, Zhang, Liu, and Sun]{xiao2024infllm}
+Xiao, C., Zhang, P., Han, X., Xiao, G., Lin, Y., Zhang, Z., Liu, Z., and Sun, M.
+\newblock Infllm: Training-free long-context extrapolation for llms with an efficient context memory.
+\newblock In \emph{First Workshop on Long-Context Foundation Models@ ICML 2024}, 2024{\natexlab{a}}.
+
+\bibitem[Xiao et~al.(2023)Xiao, Lin, Seznec, Wu, Demouth, and Han]{xiao2023smoothquant}
+Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., and Han, S.
+\newblock Smoothquant: Accurate and efficient post-training quantization for large language models.
+\newblock In \emph{International Conference on Machine Learning}, pp.\  38087--38099. PMLR, 2023.
+
+\bibitem[Xiao et~al.(2024{\natexlab{b}})Xiao, Tian, Chen, Han, and Lewis]{xiao2023efficient}
+Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M.
+\newblock Efficient streaming language models with attention sinks.
+\newblock In \emph{The Twelfth International Conference on Learning Representations}, 2024{\natexlab{b}}.
+
+\bibitem[Xu et~al.(2023)Xu, Liu, Wu, Tong, Li, Ding, Tang, and Dong]{xu2024imagereward}
+Xu, J., Liu, X., Wu, Y., Tong, Y., Li, Q., Ding, M., Tang, J., and Dong, Y.
+\newblock Imagereward: Learning and evaluating human preferences for text-to-image generation.
+\newblock In \emph{Thirty-seventh Conference on Neural Information Processing Systems}, 2023.
+
+\bibitem[Yang et~al.(2025{\natexlab{a}})Yang, Xi, Zhao, Li, Zhang, Cai, Lin, Li, Xu, Peng, et~al.]{yang2025sparse}
+Yang, S., Xi, H., Zhao, Y., Li, M., Zhang, J., Cai, H., Lin, Y., Li, X., Xu, C., Peng, K., et~al.
+\newblock Sparse videogen2: Accelerate video generation with sparse attention via semantic-aware permutation.
+\newblock \emph{arXiv preprint arXiv:2505.18875}, 2025{\natexlab{a}}.
+
+\bibitem[Yang et~al.(2025{\natexlab{b}})Yang, Teng, Zheng, Ding, Huang, Xu, Yang, Hong, Zhang, Feng, et~al.]{yang2024cogvideox}
+Yang, Z., Teng, J., Zheng, W., Ding, M., Huang, S., Xu, J., Yang, Y., Hong, W., Zhang, X., Feng, G., et~al.
+\newblock Cogvideox: Text-to-video diffusion models with an expert transformer.
+\newblock In \emph{The Thirteenth International Conference on Learning Representations}, 2025{\natexlab{b}}.
+
+\bibitem[Yu et~al.(2022)Yu, Luo, Zhou, Si, Zhou, Wang, Feng, and Yan]{yu2022metaformer}
+Yu, W., Luo, M., Zhou, P., Si, C., Zhou, Y., Wang, X., Feng, J., and Yan, S.
+\newblock Metaformer is actually what you need for vision.
+\newblock In \emph{Proceedings of the IEEE/CVF conference on computer vision and pattern recognition}, pp.\  10819--10829, 2022.
+
+\bibitem[Zhang et~al.(2025{\natexlab{a}})Zhang, Huang, Zhang, Wei, Zhu, and Chen]{zhang2025sageattention2_wksp}
+Zhang, J., Huang, H., Zhang, P., Wei, J., Zhu, J., and Chen, J.
+\newblock Sageattention2: Efficient attention with smoothing q and per-thread quantization.
+\newblock 2025{\natexlab{a}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{b}})Zhang, Li, and Su]{zhang2025sage}
+Zhang, J., Li, G., and Su, J.
+\newblock Sage: A framework of precise retrieval for rag.
+\newblock In \emph{2025 IEEE 41st International Conference on Data Engineering (ICDE)}, pp.\  1388--1401. IEEE Computer Society, 2025{\natexlab{b}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{c}})Zhang, Wei, Zhang, Chen, and Zhu]{2024sageattention}
+Zhang, J., Wei, J., Zhang, P., Chen, J., and Zhu, J.
+\newblock Sageattention: Accurate 8-bit attention for plug-and-play inference acceleration.
+\newblock In \emph{The International Conference on Learning Representations}, 2025{\natexlab{c}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{d}})Zhang, Wei, Zhang, Xu, Huang, Wang, Jiang, Zhu, and Chen]{zhang2025sageattention3}
+Zhang, J., Wei, J., Zhang, P., Xu, X., Huang, H., Wang, H., Jiang, K., Zhu, J., and Chen, J.
+\newblock Sageattention3: Microscaling fp4 attention for inference and an exploration of 8-bit training.
+\newblock \emph{arXiv preprint arXiv:2505.11594}, 2025{\natexlab{d}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{e}})Zhang, Xiang, Huang, Wei, Xi, Zhu, and Chen]{zhang2025spargeattn}
+Zhang, J., Xiang, C., Huang, H., Wei, J., Xi, H., Zhu, J., and Chen, J.
+\newblock Spargeattn: Accurate sparse attention accelerating any model inference.
+\newblock In \emph{International Conference on Machine Learning (ICML)}, 2025{\natexlab{e}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{f}})Zhang, Xiang, Huang, Wei, Xi, Zhu, and Chen]{zhang2025spargeattn_wksp}
+Zhang, J., Xiang, C., Huang, H., Wei, J., Xi, H., Zhu, J., and Chen, J.
+\newblock Spargeattn: Training-free sparse attention accelerating any model inference.
+\newblock 2025{\natexlab{f}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{g}})Zhang, Xu, Wei, Huang, Zhang, Chendong, Zhu, and Chen]{zhang2025sageattention2++}
+Zhang, J., Xu, X., Wei, J., Huang, H., Zhang, P., Chendong, X., Zhu, J., and Chen, J.
+\newblock Sageattention2++: A more efficient implementation of sageattention2.
+\newblock \emph{arXiv preprint arXiv:2505.21136}, 2025{\natexlab{g}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{h}})Zhang, Chen, Su, Ding, Stoica, Liu, and Zhang]{zhang2025fast}
+Zhang, P., Chen, Y., Su, R., Ding, H., Stoica, I., Liu, Z., and Zhang, H.
+\newblock Fast video generation with sliding tile attention.
+\newblock \emph{arXiv preprint arXiv:2502.04507}, 2025{\natexlab{h}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{i}})Zhang, Huang, Chen, Lin, Liu, Stoica, Xing, and Zhang]{zhang2025faster}
+Zhang, P., Huang, H., Chen, Y., Lin, W., Liu, Z., Stoica, I., Xing, E.~P., and Zhang, H.
+\newblock Faster video diffusion with trainable sparse attention.
+\newblock \emph{arXiv preprint arXiv:2505.13389}, 2025{\natexlab{i}}.
+
+\bibitem[Zhang et~al.(2025{\natexlab{j}})Zhang, Wei, Zhang, Zhu, and Chen]{zhang2025int8train}
+Zhang, P., Wei, J., Zhang, J., Zhu, J., and Chen, J.
+\newblock Accurate int8 training through dynamic block-level fallback.
+\newblock \emph{arXiv preprint arXiv:2503.08040}, 2025{\natexlab{j}}.
+
+\bibitem[Zhang et~al.(2024)Zhang, Chen, Hu, Xu, Chen, Hao, Han, Thai, Wang, Liu, and Sun]{zhang-etal-2024-bench}
+Zhang, X., Chen, Y., Hu, S., Xu, Z., Chen, J., Hao, M., Han, X., Thai, Z., Wang, S., Liu, Z., and Sun, M.
+\newblock $\infty${B}ench: Extending long context evaluation beyond 100{K} tokens.
+\newblock In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), \emph{Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers)}, pp.\  15262--15277, 2024.
+
+\bibitem[Zhao et~al.(2024)Zhao, Zhu, Xiang, Zheng, Li, and Zhu]{zhao2024identifying}
+Zhao, M., Zhu, H., Xiang, C., Zheng, K., Li, C., and Zhu, J.
+\newblock Identifying and solving conditional image leakage in image-to-video diffusion model.
+\newblock \emph{arXiv preprint arXiv:2406.15735}, 2024.
+
+\bibitem[Zhao et~al.(2025{\natexlab{a}})Zhao, He, Chen, Zhu, Li, and Zhu]{zhao2025riflex}
+Zhao, M., He, G., Chen, Y., Zhu, H., Li, C., and Zhu, J.
+\newblock Riflex: A free lunch for length extrapolation in video diffusion transformers.
+\newblock \emph{arXiv preprint arXiv:2502.15894}, 2025{\natexlab{a}}.
+
+\bibitem[Zhao et~al.(2025{\natexlab{b}})Zhao, Fang, Huang, Liu, Wan, Soedarmadji, Li, Lin, Dai, Yan, Yang, et~al.]{zhao2024viditq}
+Zhao, T., Fang, T., Huang, H., Liu, E., Wan, R., Soedarmadji, W., Li, S., Lin, Z., Dai, G., Yan, S., Yang, H., et~al.
+\newblock Vidit-q: Efficient and accurate quantization of diffusion transformers for image and video generation.
+\newblock In \emph{International Conference on Learning Representations}, 2025{\natexlab{b}}.
+
+\bibitem[Zheng et~al.(2023)Zheng, Lu, Chen, and Zhu]{zheng2023dpm}
+Zheng, K., Lu, C., Chen, J., and Zhu, J.
+\newblock Dpm-solver-v3: Improved diffusion ode solver with empirical model statistics.
+\newblock \emph{Advances in Neural Information Processing Systems}, 36:\penalty0 55502--55542, 2023.
+
+\bibitem[Zheng et~al.(2024{\natexlab{a}})Zheng, Chen, Mao, Liu, Zhu, and Zhang]{zheng2024masked}
+Zheng, K., Chen, Y., Mao, H., Liu, M.-Y., Zhu, J., and Zhang, Q.
+\newblock Masked diffusion models are secretly time-agnostic masked models and exploit inaccurate categorical sampling.
+\newblock \emph{arXiv preprint arXiv:2409.02908}, 2024{\natexlab{a}}.
+
+\bibitem[Zheng et~al.(2024{\natexlab{b}})Zheng, He, Chen, Bao, and Zhu]{zheng2024diffusion}
+Zheng, K., He, G., Chen, J., Bao, F., and Zhu, J.
+\newblock Diffusion bridge implicit models.
+\newblock \emph{arXiv preprint arXiv:2405.15885}, 2024{\natexlab{b}}.
+
+\bibitem[Zheng et~al.(2025)Zheng, Chen, Chen, He, Liu, Zhu, and Zhang]{zheng2025direct}
+Zheng, K., Chen, Y., Chen, H., He, G., Liu, M.-Y., Zhu, J., and Zhang, Q.
+\newblock Direct discriminative optimization: Your likelihood-based visual generative model is secretly a gan discriminator.
+\newblock \emph{arXiv preprint arXiv:2503.01103}, 2025.
+
+\bibitem[Zheng et~al.(2024{\natexlab{c}})Zheng, Peng, Yang, Shen, Li, Liu, Zhou, Li, and You]{opensora}
+Zheng, Z., Peng, X., Yang, T., Shen, C., Li, S., Liu, H., Zhou, Y., Li, T., and You, Y.
+\newblock Open-sora: Democratizing efficient video production for all.
+\newblock \emph{arXiv preprint arXiv:2412.20404}, 2024{\natexlab{c}}.
+
+\end{thebibliography}
