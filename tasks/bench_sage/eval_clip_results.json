@@ -1,0 +1,178 @@
+{
+  "sdpa": {
+    "clipsim": 0.337378,
+    "clipt": 0.979346,
+    "clipsim_per_video": [
+      {
+        "video": "0.mp4",
+        "clipsim": 0.371094
+      },
+      {
+        "video": "1.mp4",
+        "clipsim": 0.316895
+      },
+      {
+        "video": "2.mp4",
+        "clipsim": 0.362061
+      },
+      {
+        "video": "3.mp4",
+        "clipsim": 0.319092
+      },
+      {
+        "video": "4.mp4",
+        "clipsim": 0.325928
+      },
+      {
+        "video": "5.mp4",
+        "clipsim": 0.342773
+      },
+      {
+        "video": "6.mp4",
+        "clipsim": 0.30127
+      },
+      {
+        "video": "7.mp4",
+        "clipsim": 0.327393
+      },
+      {
+        "video": "8.mp4",
+        "clipsim": 0.382568
+      },
+      {
+        "video": "9.mp4",
+        "clipsim": 0.324707
+      }
+    ],
+    "clipt_per_video": [
+      {
+        "video": "0.mp4",
+        "clipt": 0.98584
+      },
+      {
+        "video": "1.mp4",
+        "clipt": 0.986328
+      },
+      {
+        "video": "2.mp4",
+        "clipt": 0.979004
+      },
+      {
+        "video": "3.mp4",
+        "clipt": 0.98877
+      },
+      {
+        "video": "4.mp4",
+        "clipt": 0.987305
+      },
+      {
+        "video": "5.mp4",
+        "clipt": 0.967773
+      },
+      {
+        "video": "6.mp4",
+        "clipt": 0.961914
+      },
+      {
+        "video": "7.mp4",
+        "clipt": 0.981934
+      },
+      {
+        "video": "8.mp4",
+        "clipt": 0.969238
+      },
+      {
+        "video": "9.mp4",
+        "clipt": 0.985352
+      }
+    ]
+  },
+  "sage3": {
+    "clipsim": 0.338647,
+    "clipt": 0.977295,
+    "clipsim_per_video": [
+      {
+        "video": "0.mp4",
+        "clipsim": 0.387207
+      },
+      {
+        "video": "1.mp4",
+        "clipsim": 0.312256
+      },
+      {
+        "video": "2.mp4",
+        "clipsim": 0.36792
+      },
+      {
+        "video": "3.mp4",
+        "clipsim": 0.323975
+      },
+      {
+        "video": "4.mp4",
+        "clipsim": 0.321777
+      },
+      {
+        "video": "5.mp4",
+        "clipsim": 0.329346
+      },
+      {
+        "video": "6.mp4",
+        "clipsim": 0.305664
+      },
+      {
+        "video": "7.mp4",
+        "clipsim": 0.338867
+      },
+      {
+        "video": "8.mp4",
+        "clipsim": 0.382324
+      },
+      {
+        "video": "9.mp4",
+        "clipsim": 0.317139
+      }
+    ],
+    "clipt_per_video": [
+      {
+        "video": "0.mp4",
+        "clipt": 0.977051
+      },
+      {
+        "video": "1.mp4",
+        "clipt": 0.983398
+      },
+      {
+        "video": "2.mp4",
+        "clipt": 0.979492
+      },
+      {
+        "video": "3.mp4",
+        "clipt": 0.98584
+      },
+      {
+        "video": "4.mp4",
+        "clipt": 0.987793
+      },
+      {
+        "video": "5.mp4",
+        "clipt": 0.973145
+      },
+      {
+        "video": "6.mp4",
+        "clipt": 0.957031
+      },
+      {
+        "video": "7.mp4",
+        "clipt": 0.976074
+      },
+      {
+        "video": "8.mp4",
+        "clipt": 0.971191
+      },
+      {
+        "video": "9.mp4",
+        "clipt": 0.981934
+      }
+    ]
+  }
+}
