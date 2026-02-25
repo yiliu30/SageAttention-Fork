@@ -37,6 +37,7 @@ python setup.py install
 
 ## How to Use
 ```python
+
 from sageattn3 import sageattn3_blackwell
 attn_output = sageattn3_blackwell(q, k, v, is_causal=False)
 ```
