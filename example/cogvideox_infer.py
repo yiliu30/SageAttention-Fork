@@ -4,7 +4,7 @@ import torch, argparse, gc
 from tqdm import tqdm
 from diffusers import CogVideoXPipeline
 from diffusers.utils import export_to_video
-from sageattention import sageattn
+# from sageattention import sageattn
 import torch.nn.functional as F
 import time
 prompt_path = "videos/testing_prompts.txt"
@@ -15,7 +15,7 @@ def parse_args():
     parser.add_argument('--compile', action='store_true', help='Compile the model')
     parser.add_argument("-s",'--smoke', action='store_true', help='Run a smoke test')
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
-    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'fa3', 'fa3_fp8'], help='Attention type')
+    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'fa3', 'fa3_fp8'], help='Attention type')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=12, help="Ending prompt id of this run.")
     args = parser.parse_args()
@@ -26,6 +26,7 @@ if __name__ == "__main__":
 
     if args.model == "cogvideox-2b":
         model_path = "/storage/yiliu7/THUDM/CogVideoX-2b"
+        model_path = "/mnt/disk1/yiliu7/models/"
         num_frames = 49
         torch_dtype = torch.float16
     else:
@@ -34,7 +35,11 @@ if __name__ == "__main__":
         torch_dtype = torch.bfloat16
 
     if args.attention_type == 'sage':
+        from sageattention import sageattn
         F.scaled_dot_product_attention = sageattn
+    elif args.attention_type == 'sage3':
+        from sageattn3 import sageattn3_blackwell
+        F.scaled_dot_product_attention = sageattn3_blackwell
     elif args.attention_type == 'fa3':
         from sageattention.fa3_wrapper import fa3
         F.scaled_dot_product_attention = fa3
@@ -59,8 +64,10 @@ if __name__ == "__main__":
         selected_prompts = ["A dog is running in the park."]
         num_inference_steps = 5
 
-    # pipe.enable_model_cpu_offload()
-    pipe.to("cuda")
+    if not args.profile:
+        pipe.enable_model_cpu_offload()
+    else:
+        pipe.to("cuda")
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
     
