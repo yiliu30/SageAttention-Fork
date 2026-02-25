@@ -8,6 +8,8 @@ from diffusers.utils import export_to_video
 import torch.nn.functional as F
 import time
 prompt_path = "videos/testing_prompts.txt"
+prompt_path = "videos/open_sora_prompts.txt"
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="CogVideoX Inference")
@@ -17,7 +19,7 @@ def parse_args():
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
     parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'fa3', 'fa3_fp8'], help='Attention type')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
-    parser.add_argument("--end", type=int, default=12, help="Ending prompt id of this run.")
+    parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
     args = parser.parse_args()
     return args
 
@@ -46,13 +48,16 @@ if __name__ == "__main__":
     elif args.attention_type == 'fa3_fp8':
         from sageattention.fa3_wrapper import fa3_fp8
         F.scaled_dot_product_attention = fa3_fp8
-
-    video_dir = f"videos/{args.model}/{args.attention_type}"
+    prompt_path_prefix = "smoke"
+    # extract prefix from prompt_path
+    prompt_path_prefix = os.path.basename(prompt_path).split(".")[0]
+    video_dir = f"videos/{args.model}/{prompt_path_prefix}/{args.attention_type}"
     os.makedirs(video_dir, exist_ok=True)
 
     with open(prompt_path, "r", encoding="utf-8") as file:
         prompts = file.readlines()
-    selected_prompts = [p.strip() for p in prompts[args.start:args.end]]
+    end = args.end if args.end is not None else len(prompts)
+    selected_prompts = [p.strip() for p in prompts[args.start:end]]
 
     pipe = CogVideoXPipeline.from_pretrained(model_path, torch_dtype=torch_dtype)
 
