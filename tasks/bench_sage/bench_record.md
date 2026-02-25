@@ -1,0 +1,3 @@
+- gen video: /mnt/disk1/yiliu7/SageAttention-Fork/build_cmd.sh
+- vbench: /mnt/disk1/yiliu7/VBench/competitions
+- target metric: CLIPSIM and CLIP-T
