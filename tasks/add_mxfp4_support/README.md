@@ -1,14 +1,50 @@
 Task Description
 
 Goal:
-1) Understand the SageAttention v3 implementation details. 2) Prepare for adding MXFP4 (block size 32) support.
+Add MXFP4 (block size 32, E8M0 scales) support to SageAttention, starting with accuracy verification and progressing to a Triton implementation.
 
-Steps:
-1. Read the paper and summarize the SageAttention v3 details. Ideally, create a diagram (Excalidraw) to illustrate the Q/K/V preprocessing, smoothing, splitting, and the two GEMM tile flows (Q@K, A@V).
-   - **Done.** See [sageattention3_dataflow.excalidraw](sageattention3_dataflow.excalidraw) for the visual diagram.
-2. Identify the core code for Q@K and A@V tile GEMM, as well as the quantization/dequantization code.
-3. Identify the core code for Q/K/V tile scaling factors, including the layout, block size (should it be a block size of 16?), and so on.
-4. Investigate whether it is possible to extend the implementation to MXFP4 (block size 32).
+## Development Plan
+
+### Step 1: NVFP4 Accuracy Baseline — Level 1 (PyTorch, no P quant)
+
+Quant-dequant simulation ignoring P quantization. Validates against SageAttention3's paper numbers.
+
+- Implement `nvfp4_quant_dequant(x, block=16, scale='e4m3')` in PyTorch
+- Flow: Smooth Q/K → quant-dequant Q, K, V → `sdpa(Q_deq, K_deq, V_deq)` + δS correction
+- Evaluate CosSim/L1/RMSE on real CogVideoX Q/K/V tensors across all layers
+- Target: reproduce paper's ~99.5% worst-case CosSim
+
+### Step 2: NVFP4 Accuracy — Level 2 (PyTorch, with tile-level P quant)
+
+Add tile-level P quantization with two-level scaling to capture full accuracy picture.
+
+- Implement tiled attention loop (outer loop over Q-tiles, vectorized P quant across K-tiles)
+- P flow per tile: softmax → sP1 = rowmax/(448×6) → rescale → quant-dequant → matmul with V_deq × sP1
+- Compare Level 2 vs Level 1 to quantify P quantization's accuracy contribution
+- Tile sizes: B_q=128, B_kv=64 (match real kernel)
+
+### Step 3: NVFP4 Attention in Triton
+
+Reimplement the SageAttention3 attention kernel in Triton with NVFP4 quant-dequant.
+
+- Triton kernel with FlashAttention-style tiling and online softmax
+- In-kernel NVFP4 quant-dequant for Q/K (pre-tile) and P (tile-level, two-level scaling)
+- Validate accuracy matches Step 2 (same data flow, different implementation)
+- This becomes the base for MXFP4 extension
+
+### Step 4: MXFP4 in Triton
+
+Update Step 3's Triton kernel to support MXFP4.
+
+- Change block size 16 → 32, scale type E4M3 → E8M0 (power-of-2 only)
+- Adapt two-level P scaling for E8M0 constraints
+- Compare MXFP4 vs NVFP4 accuracy (CosSim/L1/RMSE) across all CogVideoX layers
+- Ablation: MXFP4 for Q/K only vs MXFP4 for P/V only vs full MXFP4
+
+Notes:
+- Steps 1–2 are pure PyTorch, no GPU kernel writing required
+- Steps 3–4 target accuracy verification, not performance optimization
+- End-to-end video generation quality (VQA) can be tested at any step using CogVideoX
 
 
 Source:
