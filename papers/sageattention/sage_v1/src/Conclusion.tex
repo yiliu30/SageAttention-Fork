@@ -1,0 +1,31 @@
+\vspace{-.3em}
+\section{Conclusion and Future Work}
+\vspace{-.6em}
+We introduce \our, an efficient and precise INT8 quantization method for attention. First, we propose a method to smooth matrix K, enhancing the accuracy with under 0.2\% speed overhead. Second, we use FP16 accumulators in the Matmul of (P, V) to boost both accuracy and speed. Third, we use adaptive quantization to further improve OPS by 12\% without sacrificing accuracy. Our method surpasses FlashAttention2 and xformers by approximately \textbf{2.1x} and \textbf{2.7x}, respectively. Extensive testing confirms that our approach maintains end-to-end metrics across various models, including language, image, and video generation models. 
+
+% \textbf{Future Work.} We leave the implementation in Hopper architecture for future work. 
+% , which involves asynchronously executing MatMul and Softmax, 
+
+
+
+% TODO LIST:
+% Polish all
+% add fuse exp in ablation?
+% arrange code repo
+% Add reference
+% check grammar error
+% remove the vspace-
+% check lower case of caption in figs and tables
+% Refine the big table
+
+
+% \underline{\textit{Reproducibility statement.}} We describe experimental details in Section~\ref{sec:exp_set_up} and Appendix~\ref{sec:exp_details}, which provides the implementation references, environments, and hyper-parameters. In the supplementary materials, we also include the codes and a detailed reproducible description (README). 
+
+
+% \newpage
+
+
+
+\section*{Acknkowlegement}
+The authors would like to thank Haofeng Huang for his valuable help with the implementation. 
+This work was supported by the NSFC Project (No.~62376131), Tsinghua Institute for Guo Qiang, and the High Performance Computing Center, Tsinghua University. J.Z is also supported by the XPlorer Prize.

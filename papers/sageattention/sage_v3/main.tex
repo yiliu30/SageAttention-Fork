@@ -1,0 +1,217 @@
+\documentclass{article}
+
+
+% if you need to pass options to natbib, use, e.g.:
+%\PassOptionsToPackage{numbers, compress}{natbib}
+% before loading neurips_2025
+
+
+% ready for submission
+% \usepackage{neurips_2025}
+
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%      \usepackage[preprint]{neurips_2025}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+\usepackage[final]{neurips_2025}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+% \usepackage[nonatbib]{neurips_2025}
+
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{mathtools}
+\usepackage{amsthm}
+\usepackage{xspace}
+
+
+\usepackage{natbib}
+\PassOptionsToPackage{table}{xcolor}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{algorithmic}
+\usepackage{tikz}
+\usetikzlibrary{tikzmark,calc}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{subcaption}
+\usepackage{svg}
+\usepackage{colortbl}
+\usepackage{pifont} 
+\usepackage{makecell}
+\definecolor{lightblue}{rgb}{0.1, 0.1, 0.9} 
+\usepackage{fancyhdr}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% THEOREMS
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\theoremstyle{plain}
+\newtheorem{theorem}{Theorem}  % [section]
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{assumption}[theorem]{Assumption}
+\theoremstyle{remark}
+\newtheorem{remark}[theorem]{Remark}
+
+\newcommand{\our}{\texttt{SageAttention3}\xspace}
+\newcommand{\sageback}{\texttt{SageBwd}\xspace}
+\newcommand{\jt}[1]{\textcolor{blue}{{#1}}\xspace}
+\newcommand{\weijia}[1]{\textcolor{brown}{{#1}}\xspace}
+\newcommand{\xxm}[1]{\textcolor{gray}{{#1}}\xspace}
+\newcommand{\brown}[1]{\textcolor{brown}{{#1}}\xspace}
+\newcommand{\red}[1]{\textcolor{red}{{#1}}\xspace}
+\newcommand{\rowmax}{\mathrm{rowmax}}
+\newcommand{\diag}[1]{\mathrm{diag}\left(#1\right)}
+\newcommand{\mean}{\mathrm{mean}}
+\newcommand{\annotate}[1]{\textcolor{gray}{{#1}}\xspace}
+\newcommand{\cogvideo}{\texttt{CogvideoX}\xspace}
+\newcommand{\hyvideo}{\texttt{HunyuanVideo}\xspace}
+\newcommand{\mochi}{\texttt{Mochi}\xspace}
+\newcommand{\opensora}{\texttt{Open-Sora}\xspace}
+\newcommand{\qwen}{\texttt{Qwen2.5}\xspace}
+\newcommand{\llamal}{\texttt{Llama3.2}\xspace}
+\newcommand{\glm}{\texttt{GLM4}\xspace}
+\newcommand{\ultrapixel}{\texttt{UltraPixel}\xspace}
+\newcommand{\unidiffuser}{\texttt{Unidiffuser}\xspace}
+\newcommand{\flux}{\texttt{Flux}\xspace}
+\newcommand{\sd}{\texttt{Stable-Diffusion3.5}\xspace}
+\usepackage{float} 
+\usepackage{xcolor}
+\usepackage{placeins} 
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage[capitalize,noabbrev]{cleveref}
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{diagbox}
+\usepackage{lscape}
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage{xcolor}         % colors
+% \usepackage[pdftex]{graphicx}
+% \usepackage[nonatbib]{neurips_2025}
+% \usepackage{amsfonts}
+
+\title{SageAttention3: Microscaling FP4 Attention for Inference and An Exploration of 8-bit Training}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+% \thanks{Use footnote for providing further information
+%     about author (webpage, alternative address)---\emph{not} for acknowledging
+%     funding agencies.}
+
+\author{%
+Jintao Zhang$^{*12}$, 
+Jia Wei$^{*1}$, 
+Haoxu Wang$^{1}$, 
+Pengle Zhang$^{1}$, 
+Xiaoming Xu$^{1}$, 
+Haofeng Huang$^{1}$,\\
+\textbf{Kai Jiang}$^{1}$, 
+\textbf{Jianfei Chen}$^{\dagger1}$, 
+\textbf{Jun Zhu}$^{\dagger12}$\\[1mm]
+$^{1}$Dept. of Comp. Sci. and Tech., Institute for AI, BNRist Center, THBI Lab,\\
+Tsinghua-Bosch Joint ML Center, Tsinghua University; \quad $^{2}$Shengshu Tech., Beijing, China.\\[1mm]
+\texttt{\{zhang-jt24@mails., jianfeic@, dcszj@\}tsinghua.edu.cn}
+}
+
+\newcommand{\ourf}{\texttt{SageAttention3}\xspace}
+% \newcommand{\oure}{\texttt{SageAttn3-8b}\xspace}
+\NewDocumentCommand{\jintao}{ mO{} }{\textcolor{blue}{\textsuperscript{\textit{JT}}\textsf{\small[#1]}}}
+\newcommand{\jianfei}[1]{\textcolor{red}{{[Jianfei: #1]}}\xspace}
+
+\DeclareRobustCommand*\scircled[1]{\tikz[baseline=(char.base)]{\node[shape=circle,fill,inner sep=0.75pt] (char) {\textcolor{white}{#1}};}}
+\definecolor{deepgreen}{rgb}{0.0, 0.5, 0.0}  
+\definecolor{deepred}{rgb}{0.6, 0.0, 0.0} 
+\newcommand{\dgreen}[1]{\textcolor{deepgreen}{#1}}
+\newcommand{\dred}[1]{\textcolor{deepred}{#1}}
+
+\newcommand{\vQ}{\mathbf{Q}}
+\newcommand{\vK}{\mathbf{K}}
+\newcommand{\vV}{\mathbf{V}}
+\newcommand{\vdQ}{\mathbf{dQ}}
+\newcommand{\vdK}{\mathbf{dK}}
+\newcommand{\vdV}{\mathbf{dV}}
+\newcommand{\vS}{\mathbf{S}}
+\newcommand{\vdS}{\mathbf{dS}}
+\newcommand{\vP}{\mathbf{P}}
+\newcommand{\vdP}{\mathbf{dP}}
+\newcommand{\vU}{\mathbf{U}}
+\newcommand{\vW}{\mathbf{W}}
+\newcommand{\vT}{\mathbf{T}}
+\newcommand{\vX}{\mathbf{X}}
+\newcommand{\vO}{\mathbf{O}}
+\newcommand{\vdO}{\mathbf{dO}}
+\newcommand{\vM}{\mathbf{M}}
+\newcommand{\vZ}{\mathbf{Z}}
+
+
+\begin{document}
+
+\maketitle
+
+{\renewcommand{\thefootnote}{}\footnotetext{%
+$^{*}$ co-first authors, $^{\dagger}$ Corresponding authors.}}
+
+\begin{abstract}
+The efficiency of attention is important due to its quadratic time complexity. We enhance the efficiency of attention through two key contributions: 
+First, we leverage the new \texttt{FP4} Tensor Cores in Blackwell GPUs to accelerate attention computation. Our implementation achieves \textbf{1038} \texttt{TOPS} on \texttt{RTX5090}, which is a \textbf{5}$\times$ speedup over the fastest FlashAttention on \texttt{RTX5090}. Experiments show that our \texttt{FP4} attention can accelerate inference of various models in a plug-and-play way.
+Second, we pioneer low-bit attention to training tasks. Existing low-bit attention works like FlashAttention3 and SageAttention focus only on inference. However, the efficiency of training large models is also important. To explore whether low-bit attention can be effectively applied to training tasks, we design an accurate and efficient \texttt{8-bit} attention for both forward and backward propagation. Experiments indicate that \texttt{8-bit} attention achieves lossless performance in fine-tuning tasks but exhibits slower convergence in pretraining tasks. The code is available at \url{https://github.com/thu-ml/SageAttention}.
+  
+  
+  
+  % Recently, the \texttt{FP4} Tensor Core has been equipped to Blackwell GPUs. It has a amazing speedup than the \texttt{FP16/BF16} Tensor Core. For example, the \texttt{FP4} Tensor Core is 8$\times$ faster than in \texttt{FP16/BF16} on \texttt{RTX5090}. We develop \our to use the \texttt{FP4} Tensor Core to accelerate the attention for accelerating model inference in a plug-and-play way. \our can achieves \textbf{1030 TOPS} on \texttt{RTX5090}, which is \textbf{5$\times$} faster than the fastest FlashAttention on \texttt{RTX5090}. 
+ 
+  
+  
+
+  % Currently, the low-bit attention works, including FlashAttention3 and SageAttention, are only for inference acceleration. However, the efficiency of training large models is also important. To explore whether low-bit Attention can be effectively applied to training tasks, we design an accurate and efficient texttt{8-bit} Attention for both forward and backward propagation, validating it on tasks ranging from fine-tuning base models to instruction-following models as well as pretraining tasks. Our findings indicate that \texttt{8-bit} Attention achieves lossless performance in fine-tuning tasks but exhibits slightly slower convergence in pretraining tasks. 
+  % In summary, first, we design a \texttt{FP4} attention for inference acceleration, which is 5$\times$ faster than the fastest FlashAttention on \texttt{RTX5090}. Second, we explore the feasibility of low-bit attention in training tasks and get some valuable insights.
+
+
+
+  % However, directly using FP4 quantization for attention is inaccurate. To address the problem, we develop SageAttention3, which use two-level quantization and stochastic quantization for FP4 attention. Experiments show that xxx.
+\end{abstract}
+
+\input{src/1-Introduction.tex}
+\input{src/2-Method.tex}
+\input{src/3-INT8_Train.tex}
+\input{src/4-Experiment.tex}
+\input{src/5-Conclusion.tex}
+
+
+
+% \newpage
+
+%\bibliographystyle{neurips_2025}
+%\bibliographystyle{IEEEtran}
+\bibliographystyle{unsrt}
+\bibliography{reference.bib}
+
+\newpage
+\appendix
+\input{src/Appendix.tex}
+
+\clearpage
+\newpage
+\input{src/checklist}
+\end{document}

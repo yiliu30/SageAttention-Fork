@@ -1,0 +1,94 @@
+\documentclass{article} % For LaTeX2e
+\usepackage{iclr2025_conference,times}
+
+\input{math_commands.tex}
+
+\usepackage{natbib}
+\PassOptionsToPackage{table}{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage[ruled,vlined]{algorithm2e}
+\usepackage{algorithmic}
+\usepackage{amsmath} 
+\usepackage{amsthm} 
+\usepackage{tikz}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{amssymb}
+\usepackage{pifont} 
+\usepackage{makecell}
+\definecolor{lightblue}{rgb}{0.1, 0.1, 0.9} 
+
+
+\title{SageAttention: Accurate 8-bit attention for Plug-and-Play Inference Acceleration}
+
+
+\author{Jintao Zhang, Jia Wei, Haofeng Huang, Pengle Zhang, Jun Zhu, Jianfei Chen\thanks{Corresponding author.} \\
+Dept. of Comp. Sci. \& Tech., Institute for AI, BNRist Center,\\
+Tsinghua-Bosch Joint ML Center, THBI Lab, Tsinghua University\\
+\texttt{\{zhang-jt24@mails., jianfeic@, dcszj@\}tsinghua.edu.cn} }
+
+
+\newcommand{\fix}{\marginpar{FIX}}
+\newcommand{\new}{\marginpar{NEW}}
+\newcommand{\annotate}[1]{\textcolor{gray}{{#1}}\xspace}
+\newcommand{\flash}{\texttt{FlashAttn2}\xspace}
+\newcommand{\our}{\texttt{SageAttention}\xspace}
+\newcommand{\ourt}{\texttt{SAGEAttn-T}\xspace}
+\newcommand{\ourb}{\texttt{SAGEAttn-B}\xspace}
+\newcommand{\ourvt}{\texttt{SAGEAttn-vT}\xspace}
+\newcommand{\ourvb}{\texttt{SAGEAttn-vB}\xspace}
+\newcommand{\cogvideo}{\texttt{CogvideoX}\xspace}
+\newcommand{\llama}{\texttt{Llama2}\xspace}
+\newcommand{\ultrapixel}{\texttt{UltraPixel}\xspace}
+\newcommand{\unidiffuser}{\texttt{Unidiffuser}\xspace}
+\newcommand{\timm}{\texttt{TIMM}\xspace}
+\newcommand{\llava}{\texttt{Llava1.6}\xspace}
+\newcommand*\scircled[1]{\tikz[baseline=(char.base)]{\node[shape=circle,fill,inner sep=0.75pt] (char) {\textcolor{white}{#1}};}}
+\newcommand{\purple}[1]{\textcolor{black}{{#1}}\xspace}
+\newcommand{\jt}[1]{\textcolor{blue}{{#1}}\xspace}
+\newcommand{\jianfei}[1]{\textcolor{red}{{[Jianfei: #1]}}\xspace}
+\newcommand{\rowmax}{\mathrm{rowmax}}
+\newcommand{\diag}[1]{\mathrm{diag}\left(#1\right)}
+\newcommand{\mean}{\mathrm{mean}}
+
+\definecolor{deepgreen}{rgb}{0.0, 0.5, 0.0}  
+\definecolor{deepred}{rgb}{0.6, 0.0, 0.0}  
+
+\newcommand{\dgreen}[1]{\textcolor{deepgreen}{#1}}
+\newcommand{\dred}[1]{\textcolor{deepred}{#1}}
+
+
+\iclrfinalcopy % Uncomment for camera-ready version, but NOT for submission.
+\begin{document}
+
+
+\maketitle
+
+\begin{abstract}
+The transformer architecture predominates across various models. As the heart of the transformer, attention has a computational complexity of $O(N^2)$, compared to $O(N)$ for linear transformations. When handling large sequence lengths, attention becomes the primary time-consuming component. Although quantization has proven to be an effective method for accelerating model inference, existing quantization methods primarily focus on optimizing the linear layer.
+In response, we first analyze the feasibility of quantization in attention detailedly. Following that, we propose \our, a highly efficient and accurate quantization method for attention. The OPS (operations per second) of our approach outperforms FlashAttention2 and xformers by about \textbf{2.1x} and \textbf{2.7x}, respectively. \our also achieves superior accuracy performance over FlashAttention3. Comprehensive experiments confirm that our approach incurs almost \textbf{no end-to-end metrics loss across diverse models}—including those for large language processing, image generation, and video generation. The code is available at \jt{\url{https://github.com/thu-ml/SageAttention}}.
+
+
+\end{abstract}
+
+
+\input{src/Introduction.tex}
+\input{src/Related_work.tex}
+\input{src/Preliminary.tex}
+\input{src/Method.tex}
+\input{src/Experiments.tex}
+\input{src/Conclusion.tex}
+
+\bibliography{main}
+\bibliographystyle{iclr2025_conference}
+
+\newpage
+
+\appendix
+\input{src/appendix.tex}
+
+\end{document}

@@ -1,0 +1,374 @@
+
+
+
+
+
+% \begin{figure}[ht]
+%   \centering
+%   \includegraphics[width=\columnwidth]{src/figs/vsible_example_paper.pdf} 
+%   \vspace{-1.5em}
+%   \caption{Examples of video generation on \texttt{HunyuanVideo} and image generation on \texttt{Flux}.}
+%   \vspace{-.25em}
+%   \label{fig:visual_example} 
+% \end{figure}
+
+% \begin{table}[h!]
+% \centering
+% \caption{End-to-end inference latency using \our (first two rows) and end-to-end training latency for each step using \texttt{SageBwd} (last two rows). \jt{Split the table to two small tables, each with two rows.}}
+% \scalebox{0.93}{
+% \begin{tabular}{@{}ccccccc@{}}
+% \toprule
+% \textbf{Model} & \textbf{GPU} & \textbf{Original} & \texttt{SageAttn} & \texttt{SageAttn2} & \texttt{SageAttn3} & \texttt{SageBwd} \\
+% \midrule
+% \texttt{CogvideoX} (2B)           & RTX5090 & \num{64} s    &  \num{55} s  & \num{46} s & \textbf{\num{27} s} & - \\
+% \texttt{HunyuanVideo}             & RTX5090     & \num{489} s  & \num{257} s & \num{240} s & \textbf{\num{164} s} & - \\
+% \texttt{Llama} train (8K)    & RTX4090 & \num{2.136} s   &  - & -& -&\textbf{\num{1.910} s} \\
+% \texttt{Llama} train (16K)    & RTX4090 & \num{5.951} s   &  - & -& -&\textbf{\num{5.264} s} \\
+% \bottomrule
+% \end{tabular}}
+% \label{tab:e2e_latency}
+% \end{table}
+% \begin{table}[h!]
+% \centering
+% \caption{End-to-end inference latency using \our.}
+% \scalebox{0.93}{
+% \begin{tabular}{@{}ccccccc@{}}
+% \toprule
+% \textbf{Model} &  \textbf{Original} & \texttt{SageAttn} & \texttt{SageAttn2} & \texttt{SageAttn3}  \\
+% \midrule
+% \texttt{CogvideoX} (2B)   & \num{64} s    &  \num{55} s  & \num{46} s & \textbf{\num{27} s}  \\
+% \texttt{HunyuanVideo}       & \num{489} s  & \num{257} s & \num{240} s & \textbf{\num{164} s} \\
+% \bottomrule
+% \end{tabular}}
+% \label{tab:e2e_inference_latency}
+% \end{table}
+
+% \begin{table}[h!]
+% \centering
+% \caption{End-to-end training latency using \texttt{SageBwd}.}
+% \scalebox{0.93}{
+% \begin{tabular}{@{}ccccccc@{}}
+% \toprule
+% \textbf{Model}  & \textbf{Original} &  \texttt{SageBwd} \\
+% \midrule
+% \texttt{Llama} train (8K)  & \num{2.136} s  &\textbf{\num{1.910} s} \\
+% \texttt{Llama} train (16K)  & \num{5.951} s   &\textbf{\num{5.264} s} \\
+% \bottomrule
+% \end{tabular}}
+% \label{tab:e2e_training_latency}
+% \end{table}
+
+% \usepackage{subcaption}  % 需要在导言区引入
+% \captionsetup[subtable]{justification=centering}
+
+
+
+
+
+
+
+
+
+% \begin{table*}[ht]  
+%         \caption{End-to-end metrics comparison on various models.}
+%         \vspace{-.5em}
+%         \label{tab:end2end_metric}
+%         \begin{center}
+%         \setlength\tabcolsep{7pt}
+%         \scalebox{0.88}{\begin{tabular}{p{1.2cm}|
+%                                         p{3.5cm}|
+%                                         S[round-mode=places,round-precision=4]|
+%                                         S[round-mode=places,round-precision=4]|
+%                                         S[round-mode=places,round-precision=3]|
+%                                         S[round-mode=places,round-precision=3]|
+%                                         S[round-mode=places,round-precision=3]}
+%         \toprule
+%         {\bf Model}  & {\bf Attention}  & {\bf CLIPSIM $\uparrow$}  & {\bf CLIP-T $\uparrow$}  & {\bf VQA-a $\uparrow$}  & {\bf VQA-t $\uparrow$}  & {\bf FScore $\uparrow$} \\ \hline
+    
+%         \multirow{3}{*}{\mbox{\hspace{-.75em}\makecell[c]{\cogvideo}}} & \mbox{\hspace{-.63em}Full-Precision \texttt{(16bit)}}  & \num{0.186500481} & \num{0.996846759} & \num{70.47576785} & \num{69.8747587} & \num{4.779972658}  \\ 
+%         % & \mbox{\hspace{-.63em}\texttt{SageAttention2 (6bit)}}  & \ &    &    &   &  \\
+%         & \mbox{\hspace{-.63em}\texttt{SageAttention2 (8bit)}}  & \num{0.187955199} & \num{0.996945328} & \num{69.41409516} & \num{70.7502763} & \num{4.533658067} \\
+%         & \mbox{\hspace{-.63em}\ourf \texttt{(4bit)}}  & \num{0.188063112} & \num{0.996854377} & \num{69.85959708} & \num{70.36401131} & \num{4.035177104}
+%  \\ 
+%          \hline
+
+%         \multirow{3}{*}{\mbox{\hspace{-.3em}\makecell[c]{\texttt{Hunyuan}\\ \texttt{Video}}}} & \mbox{\hspace{-.63em}Full-Precision \texttt{(16bit)}}  & \num{0.183758953} & \num{0.999297416} & \num{68.99759129} & \num{78.8912813} & \num{1.479284461} \\ 
+%         % & \mbox{\hspace{-.63em}\texttt{SageAttention2 (6bit)}}  & \ &    &    &   &  \\
+%         & \mbox{\hspace{-.63em}\texttt{SageAttention2 (8bit)}}  & \num{0.183581577} & \num{0.999339473} & \num{69.4974095} & \num{77.01921379} & \num{1.474077849}
+%   \\
+%         & \mbox{\hspace{-.63em}\ourf \texttt{(4bit)}}  & \num{0.186603135} & \num{0.999286586} & \num{70.55188341} & \num{75.44029883} & \num{1.232380587} \\ 
+%         \hline
+
+%         \multirow{3}{*}{\mbox{\hspace{-.05em}\makecell[c]{\mochi}}} & \mbox{\hspace{-.63em}Full-Precision \texttt{(16bit)}}  &  \num{0.182780311} & \num{0.998971993} & \num{61.98399795} & \num{60.99951545} & \num{1.804162756} \\ 
+%         % & \mbox{\hspace{-.63em}\texttt{SageAttention2 (6bit)}}  & \ &    &    &   &  \\
+%         & \mbox{\hspace{-.63em}\texttt{SageAttention2 (8bit)}}  & \num{0.181911878} & \num{0.999039614} & \num{61.00932115} & \num{60.37320815} & \num{1.75389228}  \\
+%         & \mbox{\hspace{-.63em}\ourf \texttt{(4bit)}}  & \num{0.180028744} & \num{0.999295855} & \num{61.86346527} & \num{59.42930907} & \num{1.649389265} \\ 
+%         \bottomrule
+
+%         \end{tabular} }
+%         \end{center}
+    
+%     \vspace*{-.9em}
+    
+%         \begin{center}
+%         \setlength\tabcolsep{19.2pt}
+%         \scalebox{0.88}{\begin{tabular}{p{0.45cm}|
+%                                         p{2.6cm}|
+%                                         S[round-mode=places,round-precision=3]|
+%                                         S[round-mode=places,round-precision=3]|
+%                                         S[round-mode=places,round-precision=2]|
+%                                         S[round-mode=places,round-precision=2]}
+%         \toprule
+%         {\bf Model}  & {\bf Attention}  & {\bf FID $\downarrow$}  & {\bf sFID $\downarrow$}  & {\bf CLIP $\uparrow$}  & {\bf IR $\uparrow$}
+%         \\ \hline
+
+%         \multirow{3}{*}{\hspace{-1.2em}\flux} & \mbox{\hspace{-1.8em}Full-Precision \texttt{(16bit)}} &  \num{162.8121213} & \num{146.9796686} & \num{31.4087} & \num{0.907847894}   \\ 
+%         % & \mbox{\hspace{-1.8em}\texttt{SageAttention2 (6bit)}}  &  &  &  &  \\
+%         & \mbox{\hspace{-1.8em}\texttt{SageAttention2 (8bit)}}  &  \num{163.1070315} & \num{146.213366} & \num{31.4364} & \num{0.900542161}  \\
+%         & \mbox{\hspace{-1.8em}\our \texttt{(4bit)}}  & 162.1215178 & 142.8397718 & 31.4502 & 0.944088982 \\ 
+%         \hline
+
+
+%         \multirow{3}{*}{\hspace{-2.1em}\texttt{\makecell[c]{Stable-Di\\ffusion3.5}}} & \mbox{\hspace{-1.8em}Full-Precision \texttt{(16bit)}} &  \num{166.4208625} & \num{146.3786098} & \num{31.9265} & \num{0.927579908}\\ 
+%         % & \mbox{\hspace{-1.8em}\texttt{SageAttention2 (6bit)}}  &  &  &  &  \\
+%         & \mbox{\hspace{-1.8em}\texttt{SageAttention2 (8bit)}}  &  \num{164.9856257} & \num{148.5567402} & \num{32.0051} & \num{0.93267627}  \\
+%         & \mbox{\hspace{-1.8em}\ourf \texttt{(4bit)}}  &  \num{166.1026227} & \num{145.5878649} & \num{32.0063} & \num{0.921523881}  \\ 
+%         \bottomrule
+%     \end{tabular} }
+%     \end{center}
+%     \vspace{-1em}
+%     \end{table*}
+% \begin{figure}[htbp]
+%     \centering
+%     \begin{subfigure}[b]{0.50\textwidth}
+%         \centering
+%         \includegraphics[width=\textwidth]{Sage3_NIPS2025/src/figs/sage3_video.pdf}
+%         \caption{video}
+%         \label{fig:subfig1}
+%     \end{subfigure}
+%     \hspace{0.02\textwidth}
+%     \begin{subfigure}[b]{0.45\textwidth}
+%         \centering
+%         \includegraphics[width=\textwidth]{Sage3_NIPS2025/src/figs/sage3_image.pdf}
+%         \caption{image}
+%         \label{fig:subfig2}
+%     \end{subfigure}
+%     \caption{vision}
+%     \label{fig:mainfig}
+% \end{figure}
+
+
+
+
+
+
+\section{Experiments}
+\textbf{Main results.} \our is faster than FlashAttention and xformers by 5$\times$ and 11$\times$ on \texttt{RTX5090}, and maintains end-to-end metrics across various models. Furthermore, \texttt{SageBwd} is faster than FlashAttention and xformers by 1.67$\times$ and 3$\times$ on \texttt{RTX4090}, and achieves no measurable degradation in fine-tuning tasks.
+
+
+\subsection{Setup}
+\noindent \noindent\textbf{Models and attentions.} 
+We validate the effectiveness of \our and \sageback across a diverse set of representative models from language, image, and video generation.
+Specifically, we conduct experiments on: \qwen~\citep{yang2024qwen2} and \llamal~\citep{llama31model} for text2text, \cogvideo~\citep{yang2024cogvideox}, \hyvideo~\citep{kong2024hunyuanvideo}, and \mochi~\citep{genmo2024mochi} for text2video, \flux~\citep{flux}, and \sd~\citep{stable_diffusion_3_5} for text2image. 
+We compare our method with FlashAttention2~\citep{dao2023flashattention}, xformers~\citep{xFormers2022}, SageAttention~\citep{2024sageattention}, and SageAttention2~\citep{zhang2024sageattention2}. Please \textbf{note} that FlashAttention3 can only run on Hopper GPUs, so FlashAttention2 is already the fastest version for \texttt{RTX5090} and \texttt{RTX4090}. 
+
+\noindent \noindent\textbf{Datasets, metrics, and hyperparameters.} For the details about the datasets, metrics, and hyperparameters we used, please refer to Appendix~\ref{sec:exp_dataset_metrics}.
+
+\noindent\textbf{Implementation.} We implement \our using CUTLASS~\citep{cutlass} and CUDA, and implement \sageback using OpenAI Triton~\citep{openaitriton}.
+
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\columnwidth]{src/figs/vsible_example_paper.pdf} 
+  \vspace{-1em}
+  \caption{Visible examples of video generation on \texttt{HunyuanVideo} (left) and image generation on \texttt{Stable-Diffusion3.5} (right).}
+  \vspace{-.5em}
+  \label{fig:visual_example} 
+\end{figure}
+
+
+\begin{table}[H]
+\sisetup{detect-weight=true, detect-family=true}
+\centering
+\vspace{-.5em}
+\caption{End-to-end speedup performance using \our and \sageback.}
+\label{tab:e2e_latency}
+\begin{subtable}[t]{0.5\textwidth}
+    \centering
+    \subcaption{Inference latency using \our.}
+    \label{tab:e2e_inference_latency} % Label should be after subcaption
+    \scalebox{0.95}{
+    \begin{tabular}{@{}ccccc@{}}
+    \toprule
+    \textbf{Model} &  \textbf{Original} & \texttt{Sage1} & \texttt{Sage2} & \texttt{Sage3}  \\
+    \midrule
+    \texttt{CogvideoX} (2B)   & \num{64}~s    &  \num{55}~s  & \num{46}~s & \textbf{\num{27}~s}  \\
+    \texttt{HunyuanVideo}       & \num{489}~s  & \num{257}~s & \num{240}~s & \textbf{\num{164}~s} \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\hfill
+\begin{subtable}[t]{0.45\textwidth}
+    \centering
+    \subcaption{One iteration training latency using \texttt{SageBwd}.}
+    \label{tab:e2e_training_latency} % Label should be after subcaption
+    \scalebox{0.95}{
+    \begin{tabular}{@{}ccc@{}}
+    \toprule
+    \textbf{Model}  & \textbf{Original} &  \texttt{SageBwd} \\
+    \midrule
+    \texttt{Llama} (8K)  & \num{2.1}~s  &\textbf{\num{1.9}~s} \\
+    \texttt{Llama} (16K)  & \num{6.0}~s   &\textbf{\num{5.2}~s} \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\end{table}
+
+
+
+
+\subsection{Efficiency and Effectiveness}
+\noindent\textbf{Kernel Speed.} Fig.~\ref{fig:sage3_h128_speed} and~\ref{fig:sage3_h64_speed} show the kernel speed of \our and baselines on \texttt{RTX5090}. We can see that \our achieves 4\textasciitilde \textbf{5}$\times$ speedup over FlashAttention2 and 8\textasciitilde \textbf{11}$\times$ speedup over xformers. Fig.~\ref{fig:sage_train_h128_speed} and~\ref{fig:sage_train_h64_speed} show the forward+backward speed of \sageback and baselines on \texttt{RTX4090}. It shows that \sageback achieves \textbf{1.67}$\times$ speedup at most than FlashAttention2 and a higher speedup than FlashAttention2 implemented in Triton and xformers.
+
+\noindent\textbf{End-to-end metrics loss of SageAttention3.} In Table~\ref{tab:end2end_metric}, we compare the end-to-end quality metrics on various models using \our and other attention methods. The results demonstrate that \our almost incurs almost no end-to-end quality loss across these models.
+
+\noindent\textbf{End-to-end metrics loss of SageBwd.} To evaluate the effectiveness of \sageback on training tasks, we conduct two experiments. First, we fine-tune the base models of \qwen(3B) and \llamal(1B) on GSM8K~\citep{cobbe2021gsm8k}, DROP~\citep{Dua2019DROP}, MMLU~\citep{MMLU}, and HELLASWAG~\citep{zellers2019hellaswag} datasets. Fig.~\ref{fig:finetune-loss} (\subref{fig:train_b}-\subref{fig:train_e}) shows the fine-tuning loss results, indicating that \sageback perfectly aligns with \texttt{BF16}. Moreover, our evaluation of the fine-tuned models' answer quality across multiple test datasets (Table~\ref{tab:finetune}) demonstrates that \sageback achieves the same performance as \texttt{BF16}. 
+Second, we conduct pre-training tasks on FineWeb-Edu~\citep{lozhkov2024fineweb-edu} using a \texttt{Llama} (400M)~\citep{touvron2023llama} model. Fig.~\ref{fig:finetune-loss} (\subref{fig:train_a}) shows the loss curve, indicating that while \sageback can achieve loss convergence, its convergence speed is relatively slow. This limitation restricts its applicability in pretraining tasks.
+
+
+\noindent\textbf{Visible example.} Fig.~\ref{fig:visual_example} visualizes some comparative examples of video generation on \texttt{HunyuanVideo} and image generation on \texttt{Stable-diffsion3.5} using \our. The results demonstrate that \our maintains full generation quality. Additional visible examples are provided in Fig.~\ref{fig:sd_visual},~\ref{fig:flux_visual},~\ref{fig:cog_visual}, and~\ref{fig:hunyuan_visual} in the Appendix.
+
+
+\noindent\textbf{End-to-end speedup.}
+Table~\ref{tab:e2e_latency}(\subref{tab:e2e_inference_latency}) and~\ref{tab:e2e_latency}(\subref{tab:e2e_training_latency}) summarize end-to-end inference and training latency improvements. The results show that~\our (Table~\ref{tab:e2e_latency}(\subref{tab:e2e_inference_latency})) achieved about \textbf{3}$\times$ (\texttt{HunyuanVideo}) and \textbf{2.4}$\times$ (\texttt{CogVideoX}) end-to-end inference generation speedups on \texttt{RTX5090}. Furthermore, \sageback (Table~\ref{tab:e2e_latency}(\subref{tab:e2e_training_latency})) accelerates the training of Llama (1B) by about \textbf{1.15}$\times$ using 8K/16K token micro-batches on \texttt{RTX4090}.
+
+
+\subsection{Benefit of Using Both SageAttention3 and SageBwd}
+\vspace{-5mm}
+\begin{table}[H]
+\sisetup{detect-weight=true, detect-family=true}
+\centering
+\vspace{-.7em}
+\caption{Comparison between \texttt{BF16} and \texttt{INT8} fine-tuning followed by \texttt{FP4} inference.}
+\label{tab:int8_fp4_combined}
+\begin{subtable}[t]{0.48\textwidth}
+    \centering
+    \subcaption{\texttt{Qwen2.5-1.5B} results.}
+    \label{tab:qwen15b_fp4}
+    \scalebox{0.95}{
+    \begin{tabular}{@{}lcc@{}}
+    \toprule
+    \textbf{Method} & \textbf{GSM8k} $\uparrow$ & \textbf{MMLU} $\uparrow$ \\
+    \midrule
+    \texttt{BF16} Fine-tuning & 0.4912 & 0.4688 \\
+    \textbf{\texttt{SageBwd} Fine-tuning} & \textbf{0.5232} & \textbf{0.4934} \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\hfill
+\begin{subtable}[t]{0.48\textwidth}
+    \centering
+    \subcaption{\texttt{Qwen2.5-3B} results.}
+    \label{tab:qwen3b_fp4}
+    \scalebox{0.95}{
+    \begin{tabular}{@{}lcc@{}}
+    \toprule
+    \textbf{Method} & \textbf{GSM8k} $\uparrow$ & \textbf{MMLU} $\uparrow$ \\
+    \midrule
+    \texttt{BF16} Fine-tuning & 0.5860 & 0.6000 \\
+    \textbf{\texttt{SageBwd} Fine-tuning} & \textbf{0.5945} & \textbf{0.6032} \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\vspace{-0.7em}
+\end{table}
+
+
+We first apply \texttt{SageBwd} during fine-tuning, followed by \texttt{SageAttention3} during inference. Specifically, we fine-tuned \texttt{Qwen2.5} for 1,000 steps using either \texttt{BF16} or \texttt{SageBwd}, and then evaluated inference performance using \texttt{SageAttention3}. The results on GSM8k and MMLU are shown in Table~\ref{tab:int8_fp4_combined}, \texttt{INT8} \texttt{SageBwd} fine-tuning followed by \texttt{FP4} \texttt{SageAttention3} inference achieves higher accuracy on GSM8k and MMLU, suggesting the approaches are complementary. This improvement is likely because \texttt{INT8} and \texttt{FP4} share a more similar representable data distribution, reducing the mismatch error compared to \texttt{BF16}.
+
+
+\subsection{INT8 SageBwd vs FP8 SageBwd}
+\label{sec:in8_vs_fp8_sagebwd}
+% \vspace{-2.5em}
+We choose \texttt{INT8} for \texttt{SageBwd} for two key reasons: (1) Higher gradient accuracy in attention backward.
+The backward of \texttt{INT8} attention yields more accurate gradients for $Q$, $K$, and $V$ compared to \texttt{FP8}.
+We evaluate all layers of \texttt{CogVideoX-2B} and report the L1 error and cosine similarity of the gradients in Table~\ref{tab:int8_vs_fp8_l1} and Table~\ref{tab:int8_vs_fp8_cos}.
+For fairness, $\mathbf{dOV}^\top$ is kept in \texttt{FP16} for both methods.
+As shown in the results, \texttt{INT8 SageBwd} achieves lower L1 error and higher cosine similarity than \texttt{FP8 SageBwd}. (2) Wider hardware support.
+\texttt{INT8} is supported on almost all modern GPUs, including NVIDIA \texttt{A100} and many non-NVIDIA devices (e.g., AMD \texttt{MI250}~\cite{amd-mi250-rocmdocs}, Ascend \texttt{910B}~\cite{liao2021ascend}), while \texttt{FP8} support remains limited to newer architectures.
+Addintionally, we fine-tune \texttt{Qwen2.5-1.5B} and \texttt{Qwen2.5-3B} for 1,000 steps using either \texttt{INT8} or \texttt{FP8 SageBwd} (both with $\mathbf{dOV}^\top$ kept in \texttt{FP16} for fairness), and then inference with \texttt{FP4 SageAttention3}.
+As shown in Table~\ref{tab:int8_fp8_finetune}, models fine-tuned with \texttt{INT8} attention achieve higher accuracy on both GSM8K and MMLU benchmarks.
+
+\begin{table}[h]
+\vspace{-.5em}
+\centering
+\small
+\begin{minipage}{0.48\linewidth}
+\centering
+\caption{L1 error of $Q$, $K$, and $V$ gradients.}
+\label{tab:int8_vs_fp8_l1}
+\begin{tabular}{lccc}
+\toprule
+Method & $dQ$ $\downarrow$ & $dK$ $\downarrow$ & $dV$ $\downarrow$ \\
+\midrule
+\texttt{INT8 SageBwd} & \textbf{0.0290} & \textbf{0.0317} & \textbf{0.0423} \\
+\texttt{FP8 SageBwd} & 0.0696 & 0.0999 & 0.0873 \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\hfill
+\begin{minipage}{0.48\linewidth}
+\centering
+\caption{Cos similarity of $Q$, $K$, and $V$ gradients.}
+\label{tab:int8_vs_fp8_cos}
+\begin{tabular}{lccc}
+\toprule
+Method & $dQ$ $\uparrow$ & $dK$ $\uparrow$ & $dV$ $\uparrow$ \\
+\midrule
+\texttt{INT8 SageBwd} & \textbf{0.9987} & \textbf{0.9993} & \textbf{0.9995} \\
+\texttt{FP8 SageBwd} & 0.9880 & 0.9910 & 0.9955 \\
+\bottomrule
+\end{tabular}
+\end{minipage}
+\vspace{-.5em}
+\end{table}
+
+\vspace{-5mm}
+\begin{table}[h]
+\centering
+\small
+\caption{Comparison of \texttt{INT8} and \texttt{FP8} \texttt{SageBwd} fine-tuning on \texttt{Qwen2.5} models.}
+\label{tab:int8_fp8_finetune}
+\vspace{-0.5em}
+\begin{subtable}[t]{0.48\textwidth}
+    \centering
+    \subcaption{\texttt{Qwen2.5-1.5B}}
+    \label{tab:qwen15b}
+    \scalebox{0.95}{
+    \begin{tabular}{lcc}
+    \toprule
+    Method & GSM8K $\uparrow$ & MMLU $\uparrow$ \\
+    \midrule
+    \texttt{INT8} Fine-tuning & \textbf{0.5232} & \textbf{0.4934} \\
+    \texttt{FP8} Fine-tuning & 0.5031 & 0.4689 \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\hfill
+\begin{subtable}[t]{0.48\textwidth}
+    \centering
+    \small
+    \subcaption{\texttt{Qwen2.5-3B}}
+    \label{tab:qwen3b}
+    \scalebox{0.95}{
+    \begin{tabular}{lcc}
+    \toprule
+    Method & GSM8K $\uparrow$ & MMLU $\uparrow$ \\
+    \midrule
+    \texttt{INT8} Fine-tuning & \textbf{0.5945} & \textbf{0.6032} \\
+    \texttt{FP8} Fine-tuning & 0.5868 & 0.5907 \\
+    \bottomrule
+    \end{tabular}}
+\end{subtable}
+\vspace{-.75em}
+\end{table}

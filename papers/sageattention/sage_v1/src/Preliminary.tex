@@ -1,0 +1,39 @@
+
+\section{Preliminary}
+
+Our method builds on FlashAttention-2 and adopts dynamic quantization.  We will begin by reviewing FlashAttention-2, followed by a brief introduction to dynamic quantization techniques.
+
+
+\subsection{FlashAttention} \label{sec:flash_attn}
+
+The computation of self-attention can be formulated as follows: $S = Q K^\top/\sqrt{d},~P = \sigma(S),~O = P V$, where $\sigma(S)_{ij} = \exp(S_{ij})/\sum_{k} \exp(S_{ik})$ is the softmax operation.
+The matrices $Q$, $K$, and $V$ each have dimensions $N \times d$, while the matrices $S$, $P$ are $N \times N$. While $d$ is typically small, e.g., 64 or 128, $N$ can be thousands if not millions. Therefore, the $N\times N$ matrices $(S, P)$ are much larger than $(Q, K, V)$, and a naive implementation suffers from the huge amount of global memory I/O for $(S, P)$ reads/writes. FlashAttention~\citep{dao2023flashattention} proposes to tile $Q$, $K$, and $V$ from the token dimension into blocks $\{Q_i\}, \{K_i\}, \{V_i\}$ with block sizes of $b_q$, $b_{kv}$, $b_{kv}$, respectively. Then, to avoid the memory I/O for $(S, P)$, it uses online softmax~\citep{milakov2018online} to progressively compute each block of $O$, i.e., $O_i$ as follows.
+
+First, for each block of $\{K_i\}, \{V_i\}$, it computes the following equations iteratively:
+
+\begin{align}
+ S^j_i = Q_i K_j^\top / \sqrt{d},& ~~~(m^{j}_i, \widetilde P^j_i) = \tilde\sigma(m^{j-1}_i, S^j_i),  \\
+ l_i^j = \exp(m^{\purple{j-1}}_i-m^{\purple{j}}_i) l_i^{j-1} + \mathrm{rowsum}(\widetilde P^j_i),& ~~O^j_i=\diag{\exp(m^{\purple{j-1}}_i-m^{\purple{j}}_i)} O^{j-1}_i + \widetilde P^j_i V_j 
+\end{align}
+
+
+Where $m_i^j$ and $l_i^j$ are $b_q \times 1$ vectors, which are initialized to $- \infty$ and $0$ respectively. $\tilde \sigma()$ is an online softmax operator: $m^j_i = \max\{m^{j-1}_i, \rowmax(S^j_i)\},~\widetilde P_j^i=\exp(S^j_i-m^j_i)$.
+
+Finally, \purple{after all iterations, i.e., $j = b_{kv}$}, the output $O_i$ can be computed by $O_i = \mathrm{diag}(l_i^j)^{-1} O_i^j$.
+
+
+\subsection{Dynamic Quantization} \label{sec:dynamic_quant}
+
+A matrix multiplication $C=AB$ can be accelerated with quantization as:
+\begin{align}
+(\delta_A, \hat A) = \psi(A),~~~~(\delta_B, \hat B) = \psi(B),~~~~\hat C=\hat A\hat B,~~~~C=\psi^{-1}_{\delta_A\delta_B}(\hat C)
+\end{align}
+Here, $\psi$ is a \emph{quantizer} which converts a high-precision (e.g., FP32) matrix $A$ to a low-precision format $\hat A$ (e.g., INT8 or FP8) with a \emph{scale} $\delta_A$, and $\psi^{-1}$ is a \emph{dequantizer} to convert back to high-precision. We should have $\psi^{-1}_{\delta_A}(\hat A)\approx A$. The actual matrix multiplication $\hat A\hat B$ is carried in low-precision. In modern GPUs, low-precision matrix multiplication is usually multiple times faster than higher-precision ones. 
+
+Many quantizers depend on the numerical format and granularity, e.g., how many elements share a common scale factor. For example, an INT8 \emph{per-tensor dynamic quantizer} first computes the scale as the maximum absolute value of the entire tensor, scales the elements to the maximum representable range of INT8 [-127, +127], and then casts to INT8 with rounding: $\hat A = \lceil A/\delta_A \rfloor, \delta_A=\max(|A|)/127$. 
+Likewise, \emph{per-token quantizer} assigns a scale factor for each token of a tensor: $\hat A[i,:] = \lceil A[i,:]/\delta_A \rfloor, \delta_A[i,:] = \max(|A[i,:]|)/127$. 
+Also, \emph{per-channel quantizer} assigns a scale factor for each channel of the tensor, i.e., along the channel dimension: $A[:, i] = \lceil A[:, i] / \delta_A \rfloor, \delta_A = \max(|A[:, i]|) / {127}$.
+Based on the tiling approach of FlashAttention, we can apply per-block quantization correspondingly. \emph{per-block quantizer} asigns a scale factor for every $b=m-n$ tokens: $\hat A[m:n,:] = \lceil A[m:n,:]/\delta_A \rfloor, \delta_A = \max(|A[m:n,:]|)/127$. 
+Dequantization simply involves a element-wise scaling: $\psi_{\delta_A}^{-1}(\hat A)=\delta_A \hat A$.
+
+

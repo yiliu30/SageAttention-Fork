@@ -1,0 +1,58 @@
+\section{Preliminary} \label{sec:preliminary}
+\subsection{FlashAttention} \label{sec:flashattn}
+The attention computation can be formulated as: $S = Q K^\top/\sqrt{d},~P = \sigma(S),~O = P V$, where $\sigma(S)_{ij} = \exp(S_{ij})/\sum_{k} \exp(S_{ik})$.
+The matrices $Q$, $K$, and $V$ each have dimensionality $N \times d$, and $S$, $P$ are $N \times N$. $d$ is typically small, e.g., 64 or 128, and $N$ can be thousands or millions. The time complexity of attention is \(O(N^2)\), primarily due to two matrix multiplications (\(QK^\top\) and \(PV\)), both with complexities of \(O(N^2d)\).
+FlashAttention~\cite{dao2023flashattention} is a GPU-friendly attention implementation, which tiles $Q$, $K$, and $V$ from the token dimension into blocks $\{Q_i\}_{i=1}^{n_q}, \{K_i\}_{i=q}^{n_k}, \{V_i\}_{i=1}^{n_v}$ with block sizes of $b_q$, $b_{k}$, $b_{v}$ tokens, respectively, where $n_q, n_k, n_v$ are the number of tiles, and $b_{k}$ = $b_{v}$. 
+FlashAttention computes the output matrix $O$ in parallel in tiles. Each streaming multiprocessor (SM) computes a block $O_i$ (corresponds to a $Q_i$) by iteratively loads $K_j, V_j$ for each $j$, and update the output  with online softmax~\cite{milakov2018online}: 
+\begin{align}
+ S_{ij} =& Q_i K_j^\top / \sqrt{d},~~(m_{ij}, \widetilde P_{ij}) = \tilde\sigma(m_{i,j-1}, S_{ij}),\label{eqn:online-softmax} \\
+ l_{ij} =& \exp(m_{i,j-1}-m_{ij}) l_{i,j-1} + \mathrm{rowsum}(\widetilde P_{ij}),\notag \\
+ O_{ij}=& \diag{\exp(m_{i,j-1}-m_{ij})} O_{i,j-1} + \widetilde P_{ij} V_j  \notag, 
+\end{align}
+where $m_{ij}$ and $l_{ij}$ are $b_q$-dimenalional vectors, initialized with $-\infty$ and $0$ respectively. $\tilde \sigma(\cdot)$ is an online softmax operator: $m_{ij} = \max\{m_{i,j-1}, \rowmax(S_{ij})\},~\widetilde P_{ij}=\exp(S_{ij}-m_{ij})$.
+Finally, the output is computed as $O_i = \mathrm{diag}(l_{i,n_q})^{-1} O_{i,n_q}$.
+
+
+
+
+\subsection{Quantization} \label{sec:quantization}
+A matrix multiplication $C=AB$ can be accelerated with quantization as:
+\begin{align*}
+(\delta_A, \hat A) = \psi(A),~~(\delta_B, \hat B) = \psi(B), ~~C=\psi^{-1}_{\delta_A\delta_B}(\hat A\hat B)
+\end{align*}
+$\psi$ is a \textit{quantizer} which converts a high-precision (e.g., FP32 or FP16) matrix $A$ to a low-precision format $\hat A$ (e.g., INT4 or FP8) with a \textit{scale} $\delta_A$, and $\psi^{-1}$ is a \textit{dequantizer} to convert back to high-precision. We should have $\psi^{-1}_{\delta_A}(\hat A)\approx A$. The actual matrix multiplication $\hat A\hat B$ is performed with low precision. In modern GPUs, low-precision matrix multiplication is usually multiple times faster than higher-precision ones. 
+Quantizers differ in \emph{numerical format} and \emph{granularity}, e.g., how many elements (``quantization group'') share a common scale factor. 
+For example, an \emph{INT4}, \textit{per-tensor quantizer} first computes the scale as the maximum absolute value of the entire tensor, scales the elements to the maximum representable range of INT4 [-7, +7], and then casts to INT4 with rounding: $\hat A = \lceil A/\delta_A \rfloor, \delta_A=\max(|{A}|)/7$. 
+The dequantization process is an element-wise scaling. For example, for per-tensor dequantization, $\psi_{\delta_A\delta_B}^{-1}(\hat A\hat B)=\hat A \hat B \times \delta_A \delta_B$.
+
+\begin{table}[htb!]
+% \vspace{-1.25em}
+    \centering
+    \caption{Speedup compared to matrix multiplication in FP16 with an FP32 accumulator.}
+    \label{tab:speedup_of_tensor_core}
+    \setlength\tabcolsep{8.1pt}
+    \scalebox{0.86}{
+    \begin{tabular}{c|c|c|c}
+        \toprule
+        \textbf{GPU} & \textbf{MM Input} & \textbf{MM Accumulator} & \textbf{Speedup} \\
+        \hline
+        \multirow{2}{*}{\makecell[c]{RTX4090}}  
+            % & INT8	 & INT32  &  4x \\
+          & FP16	 & FP16  &  2x \\
+          & FP8	 & FP32  &  2x \\
+          % & INT4	 & INT32  &  \textbf{8x} \\ 
+          \hline
+        \multirow{2}{*}{\makecell[c]{L40, L20 \\ H100}}  
+        % & INT8	 & INT32  &  2x \\
+          & FP16	 & FP16  &  \textbf{1x} \\
+          & FP8	 & FP32  &  2x \\
+        \bottomrule                  
+    \end{tabular}
+    }
+\vspace{-.5em}
+\end{table}
+
+\subsection{SageAttention} 
+Based on the block tiling in FlashAttention~\cite{dao2022flashattention}, SageAttention~\cite{2024sageattention} quantizes $Q, K$ to INT8 in a per-block granularity, that is, each $Q_i, K_i$ has a separate scalar scale:
+$\delta_{Q_i} = \max(|{Q_i|})/127, \delta_{K_j} = \max(|{K_j|})/127$. In this way, the product $S_{ij}$ in Eq.~(\ref{eqn:online-softmax}) can be approximated as $S_{ij}\approx \hat Q_i \hat K_j^\top \times (\delta_{Q_i}\delta_{K_j}/\sqrt{d})$.
+To maintain accuracy, SageAttention proposes a preprocessing technique by subtracting the token-wise mean from $K$. Additionally, SageAttention keeps $\widetilde P_{ij}$ and $V_j$ in FP16, but utilizes an FP16 accumulator (rather than FP32) for computing the product $\widetilde P_{ij}V_j$. Reducing accumulator precision can accelerate matrix multiplication (MM) on the RTX4090 GPU. However, other GPUs, such as L20, L40, or H100, do not exhibit this behavior, as shown in Table~\ref{tab:speedup_of_tensor_core}.
