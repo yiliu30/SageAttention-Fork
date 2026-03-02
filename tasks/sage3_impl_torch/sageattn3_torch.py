@@ -21,14 +21,42 @@ Real kernel alignment features:
 
 Expected accuracy improvement: >95% cosine similarity with real kernel
 This demonstrates the complete NVFP4 quantization system used in actual Blackwell hardware.
-"""
 
+Debug Logging:
+    To enable detailed debug output, set environment variable: SAGE_DEBUG=1
+    Example: SAGE_DEBUG=1 python sageattn3_torch.py
+
+    Requires: pip install loguru (optional, falls back to standard logging)
+"""
+import os
 import torch
 import torch.nn.functional as F
 import math
 from typing import Optional, Tuple, Union
 
+# Configure loguru logger for debug output
+try:
+    from loguru import logger
 
+    # Configure logger to only show debug messages when enabled
+    # To enable debug logging, set environment variable: SAGE_DEBUG=1
+    import os
+    if os.environ.get('SAGE_DEBUG', '0') == '1':
+        logger.enable("sageattn3_torch")
+    else:
+        logger.disable("sageattn3_torch")
+
+except ImportError:
+    # Fallback if loguru not available
+    import logging
+    logger = logging.getLogger("sageattn3_torch")
+    logger.setLevel(logging.DEBUG if os.environ.get('SAGE_DEBUG', '0') == '1' else logging.WARNING)
+
+    # Add debug method for compatibility
+    if not hasattr(logger, 'debug'):
+        logger.debug = logger.debug
+
+@torch.inference_mode()
 def sageattn3_torch(
     q: torch.Tensor,
     k: torch.Tensor,
@@ -73,14 +101,14 @@ def sageattn3_torch(
         sm_scale = 1.0 / math.sqrt(D)  # Standard 1/sqrt(D) scaling
 
     print(f"Input shapes - Q: {q.shape}, K: {k.shape}, V: {v.shape}")
-    print(f"Real kernel-aligned scale: {sm_scale:.6f}")
-    print("Using proper global range normalization: vecMax / 6.0")
+    logger.debug(f"Real kernel-aligned scale: {sm_scale:.6f}")
+    logger.debug("Using proper global range normalization: vecMax / 6.0")
 
     # Step 1: QK smoothing with delta_s correction
     if per_block_mean:
         q_smoothed, k_smoothed, delta_s = apply_qk_smoothing(q, k)
-        print(f"After smoothing - Q: {q_smoothed.shape}, K: {k_smoothed.shape}")
-        print(f"Delta_s computed: {delta_s.shape}")
+        logger.debug(f"After smoothing - Q: {q_smoothed.shape}, K: {k_smoothed.shape}")
+        logger.debug(f"Delta_s computed: {delta_s.shape}")
     else:
         q_smoothed, k_smoothed = q, k
         delta_s = None
@@ -104,8 +132,8 @@ def sageattn3_torch(
     if output.size(2) != original_seq_len:
         output = output[:, :, :original_seq_len, :].contiguous()
 
-    print(f"Final output shape: {output.shape}")
-    print(f"Final output range: [{output.min().item():.6f}, {output.max().item():.6f}]")
+    logger.debug(f"Final output shape: {output.shape}")
+    logger.debug(f"Final output range: [{output.min().item():.6f}, {output.max().item():.6f}]")
 
     if return_lse:
         return output, None  # LSE not implemented for simplicity
@@ -159,7 +187,7 @@ def apply_qk_smoothing(
     # Step 4: Compute delta_s = q_means @ k^T
     delta_s = torch.matmul(q_means, k_smoothed.transpose(-2, -1)).to(torch.float32)
 
-    print(f"QK smoothing: {num_groups} groups, delta_s shape: {delta_s.shape}")
+    logger.debug(f"QK smoothing: {num_groups} groups, delta_s shape: {delta_s.shape}")
 
     return q_smoothed, k_smoothed, delta_s
 
@@ -360,11 +388,11 @@ def educational_quantize_p_two_level(p_tile: torch.Tensor) -> torch.Tensor:
     """
     p_quantized = two_level_p_quantization(p_tile)
 
-    print(f"Two-level P quantization applied:")
-    print(f"  Input shape: {p_tile.shape}")
-    print(f"  Level 1: FP8 global scale per token (max=448)")
-    print(f"  Level 2: FP4 microscaling per 16-element block (max=6)")
-    print(f"  Combined scale factor: {448 * 6}")
+    logger.debug(f"Two-level P quantization applied:")
+    logger.debug(f"  Input shape: {p_tile.shape}")
+    logger.debug(f"  Level 1: FP8 global scale per token (max=448)")
+    logger.debug(f"  Level 2: FP4 microscaling per 16-element block (max=6)")
+    logger.debug(f"  Combined scale factor: {448 * 6}")
 
     return p_quantized
 
@@ -395,8 +423,8 @@ def educational_quantize(x: torch.Tensor) -> torch.Tensor:
     # Apply NVFP4 quantization with real kernel's global scaling
     x_quantized, scales = nvfp4_quantize(x, block_size=16)
 
-    print(f"Real kernel NVFP4 quantization: K-dim {x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
-    print(f"Applied global range normalization: vecMax / 6.0")
+    logger.debug(f"Real kernel NVFP4 quantization: K-dim {x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
+    logger.debug(f"Applied global range normalization: vecMax / 6.0")
 
     return x_quantized
 
@@ -424,7 +452,7 @@ def tiled_online_attention(
     num_q_tiles = (N + tile_size_q - 1) // tile_size_q
     num_k_tiles = (N + tile_size_k - 1) // tile_size_k
 
-    print(f"Processing {num_q_tiles} Q tiles × {num_k_tiles} K tiles")
+    logger.debug(f"Processing {num_q_tiles} Q tiles × {num_k_tiles} K tiles")
 
     for q_idx in range(num_q_tiles):
         q_start = q_idx * tile_size_q
@@ -512,3 +540,11 @@ if __name__ == "__main__":
     print("")
     print("Expected accuracy: >95% cosine similarity with real kernel")
     print("Based on analysis of sageattn3_blackwell kernel implementation")
+    print("")
+    print("💡 Debug Logging:")
+    print("   Set SAGE_DEBUG=1 to enable detailed debug output")
+    print("   Example: SAGE_DEBUG=1 python sageattn3_torch.py")
+    if 'SAGE_DEBUG' in os.environ and os.environ['SAGE_DEBUG'] == '1':
+        print("   🐛 Debug logging ENABLED")
+    else:
+        print("   ℹ️  Debug logging DISABLED (set SAGE_DEBUG=1 to enable)")
