@@ -116,3 +116,7 @@ F.scaled_dot_product_attention = sageattn  # Global replacement
 - Quantization parameters (`quant_gran`, `pv_accum_dtype`) significantly impact performance/accuracy tradeoffs
 - Two-level accumulation (`fp32+fp16`) is key to SageAttention2++ performance gains
 - Variable-length attention (`sageattn_varlen`) requires different kernel paths for batched inference
+
+### Test
+- python envs: /mnt/disk1/yiliu7/sage/bin/python
+- sage3 real kerenl demo: SageAttention-Fork/sageattention3_blackwell/examples/sageattn3_demo.py
