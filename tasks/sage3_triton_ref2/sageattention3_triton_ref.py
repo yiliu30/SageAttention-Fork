@@ -144,11 +144,11 @@ def blockscaled_fp4_attn_kernel(
             k = tl.load(k_ptrs, mask=k_mask, other=0.0)
             k_scales = tl.load(k_scale_ptrs, mask=offs_n < M, other=1.0)
 
-            # For accuracy testing, use minimal quantization simulation
-            # The actual FP4 quantization is causing too much information loss
-            # Instead, use the original values with minimal perturbation to demonstrate the concept
-            q_dequant = q.to(tl.float16) * q_scales[:, None].to(tl.float16)  # Bypass quantization error
-            k_dequant = k.to(tl.float16) * k_scales[None, :].to(tl.float16)  # Bypass quantization error
+            # Properly dequantize Q and K from quantized int8 data
+            # The q, k tensors are int8 values from -14 to +14 representing quantized FP4
+            # First convert back to FP4 magnitudes, then apply scale factors
+            q_dequant = (q.to(tl.float16) / 14.0) * q_scales[:, None].to(tl.float16)
+            k_dequant = (k.to(tl.float16) / 14.0) * k_scales[None, :].to(tl.float16)
 
             # QK^T computation (FP4MM simulation) with softmax scaling
             qk = tl.dot(q_dequant, k_dequant, out_dtype=tl.float32)
@@ -171,9 +171,20 @@ def blockscaled_fp4_attn_kernel(
             l_new = alpha * l_i + l_ij
             acc = acc * alpha[:, None]
 
-            # Minimize P quantization for accuracy - keep most of the original attention pattern
-            # Educational note: Real hardware quantization would be more aggressive
-            p_quantized = p  # Skip quantization for better accuracy
+            # Two-level P quantization (adjusted for better accuracy)
+            # Level 1: Per-token FP32 scale to map P to a reasonable FP4 range
+            # The original 448×6 = 2688 is too large for FP4 E2M1 {0,0.5,1,2,3,4,6}
+            # Use a smaller scale factor that better utilizes the FP4 range
+            p_max_per_token = tl.max(p, axis=1, keep_dims=True)
+            p_scale_level1 = p_max_per_token / 4.0  # Map max to ~4 (within FP4 range)
+            p_scale_level1 = tl.maximum(p_scale_level1, 1e-7)  # Avoid division by zero
+            p_level1 = p / p_scale_level1
+
+            # Level 2: NVFP4 microscaling quantization
+            p_quantized = _quantize_to_fp4_triton_standalone(p_level1)
+
+            # Store the scale for later dequantization
+            p_combined_scale = p_scale_level1
 
             # Load V block (V is transposed to [B, H, D, M])
             v_ptrs = V_ptr + (pid_b * stride_vz + pid_h * stride_vh +
@@ -185,13 +196,18 @@ def blockscaled_fp4_attn_kernel(
             v = tl.load(v_ptrs, mask=v_mask, other=0.0)
             v_scales = tl.load(v_scale_ptrs, mask=offs_d < HEAD_DIM, other=1.0)
 
-            # Bypass V quantization for accuracy - use original values with scale factors
-            v_dequant = v.to(tl.float16) * v_scales[:, None].to(tl.float16)  # Minimal error
+            # Properly dequantize V from quantized int8 data, ensure fp16 output
+            v_fp32 = (v.to(tl.float32) / 14.0) * v_scales[:, None].to(tl.float32)
+            v_dequant = v_fp32.to(tl.float16)  # Explicitly convert to fp16
 
-            # PV computation - fix dtype and remove scaling
-            pv = tl.dot(p_quantized.to(tl.float16), v_dequant.T, out_dtype=tl.float32)
+            # Dequantize P before PV matmul (as done in real kernel)
+            # Apply the combined scale factor to restore proper magnitude
+            p_dequant = p_quantized * p_combined_scale
 
-            # Accumulate without level1 scaling
+            # PV computation with dequantized P (ensure dtype compatibility)
+            pv = tl.dot(p_dequant.to(tl.float16), v_dequant.T, out_dtype=tl.float32)
+
+            # Accumulate (scale factor already applied in dequantization)
             acc += pv
 
             # Update softmax statistics
@@ -652,10 +668,14 @@ class SageAttention3TritonReference:
             # Dequantize V
             v_dequant = SageAttention3TritonReference._dequantize_fp4_triton(v, v_scales)
 
-            # PV computation - fix dtype and remove scaling
-            pv = tl.dot(p_quantized.to(tl.float16), v_dequant.T, out_dtype=tl.float32)
+            # Dequantize P before PV matmul (as done in real kernel)
+            # Apply the combined scale factor to restore proper magnitude
+            p_dequant = p_quantized * p_combined_scale
 
-            # Accumulate without level1 scaling
+            # PV computation with dequantized P (ensure dtype compatibility)
+            pv = tl.dot(p_dequant.to(tl.float16), v_dequant.T, out_dtype=tl.float32)
+
+            # Accumulate (scale factor already applied in dequantization)
             acc += pv
 
             # Update softmax statistics
@@ -1116,6 +1136,20 @@ class SageAttention3TritonReference:
             l_padding = metadata['l_padding']
             original_l = output.size(-2) - l_padding
             output = output[..., :original_l, :]
+
+        # CRITICAL FIX: Reverse smoothing factors applied during preprocessing
+        if 'smoothing_factors' in metadata:
+            # Analysis of attention computation O = softmax(QK^T/√d)V:
+            # - Q and K are smoothed (divided by smoothing factors, making them larger)
+            # - V is NOT smoothed (keeps original magnitude)
+            # - QK^T is affected by Q×K smoothing, but softmax normalizes this
+            # - Final output should preserve V's original magnitude
+            # - Since V was not smoothed, NO smoothing reversal is needed for the output
+
+            # The previous implementation incorrectly applied Q smoothing factor reversal
+            # But since V maintains its original scale and softmax normalizes attention weights,
+            # the output should already be at the correct magnitude
+            pass  # No smoothing reversal needed
 
         # Convert back to target layout
         if target_layout == "NHD":
