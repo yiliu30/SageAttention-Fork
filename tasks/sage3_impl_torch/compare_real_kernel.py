@@ -61,7 +61,10 @@ def test_real_kernel_comparison():
     test_configs = [
         {"B": 1, "H": 8, "N": 512, "D": 64, "name": "Small"},
         {"B": 1, "H": 8, "N": 1024, "D": 64, "name": "Medium"},
+        {"B": 2, "H": 32, "N": 1024, "D": 64, "name": "Medium (Large Batch)"},
         {"B": 2, "H": 16, "N": 512, "D": 128, "name": "Large (if supported)"},
+        # Very long seq
+        {"B": 1, "H": 8, "N": 1024 * 16, "D": 64, "name": "Very Long Sequence"}, 
     ]
 
     results = []
