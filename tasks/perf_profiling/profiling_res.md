@@ -21,6 +21,7 @@
 
 
 ### Results:
+```bash
 ============================================================
 Attention Proportion Report (sage3)
 ============================================================
@@ -59,7 +60,7 @@ Attention Proportion Report (sdpa)
   Transformer fwd calls   :          5
   Avg attn per call       :      21.44 ms
 ============================================================
-
+```
 
 ### OP benchmark
 
