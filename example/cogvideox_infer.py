@@ -90,8 +90,10 @@ def parse_args():
     parser.add_argument('--compile', action='store_true', help='Compile the model')
     parser.add_argument("-s",'--smoke', action='store_true', help='Run a smoke test')
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
+    parser.add_argument("-q",'--quick_e2e', action='store_true', help='Run a quick end-to-end test')
     parser.add_argument('--proportion', action='store_true', help='Measure attention kernel time proportion in the whole pipeline')
     parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'sage3_triton', 'fa3', 'fa3_fp8', ""], help='Attention type')
+    parser.add_argument('-i','--save_frames', action='store_true', help='Save individual frames as PNG images')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
     args = parser.parse_args()
@@ -175,6 +177,12 @@ if __name__ == "__main__":
     if args.smoke:
         selected_prompts = ["A dog is running in the park."]
         num_inference_steps = 5
+    if args.quick_e2e:
+        # img size
+        selected_prompts = ["A dog is running in the park."]
+        num_frames = 6
+        # height=128
+        # width=128
 
     if not args.profile and not args.proportion:
         pipe.enable_model_cpu_offload()
@@ -220,8 +228,19 @@ if __name__ == "__main__":
                 num_frames=num_frames,
                 guidance_scale=6,
                 generator=torch.Generator(device="cuda").manual_seed(42),
+                #     # img size
+                # height=height,
+                # width=width,
             ).frames[0]
         print(f"Profiling trace saved to {trace_dir}/ (view with: tensorboard --logdir {trace_dir})")
+
+        # Save individual frames as images (if requested)
+        if args.save_frames:
+            frames_dir = f"{video_dir}/{global_i}_frames"
+            os.makedirs(frames_dir, exist_ok=True)
+            for frame_idx, frame in enumerate(video):
+                frame.save(f"{frames_dir}/frame_{frame_idx:03d}.png")
+            print(f"Saved {len(video)} frames to {frames_dir}/")
 
         export_to_video(video, f"{video_dir}/{global_i}.mp4", fps=8)
         del video
@@ -319,6 +338,14 @@ if __name__ == "__main__":
             guidance_scale=6,
             generator=torch.Generator(device="cuda").manual_seed(42),
         ).frames[0]
+
+        # Save individual frames as images (if requested)
+        if args.save_frames:
+            frames_dir = f"{video_dir}/{global_i}_frames"
+            os.makedirs(frames_dir, exist_ok=True)
+            for frame_idx, frame in enumerate(video):
+                frame.save(f"{frames_dir}/frame_{frame_idx:03d}.png")
+            print(f"Saved {len(video)} frames to {frames_dir}/")
 
         export_to_video(video, f"{video_dir}/{global_i}.mp4", fps=8)
         del video
