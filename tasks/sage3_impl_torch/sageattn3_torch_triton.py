@@ -413,6 +413,7 @@ def sageattn3_torch_triton(
     tile_size_q: int = 64,
     tile_size_k: int = 64,
     return_lse: bool = False,
+    debug: bool = False,
 ):
     """
     SageAttention3 Triton implementation with same API as PyTorch version.
@@ -430,6 +431,7 @@ def sageattn3_torch_triton(
         tile_size_q: Query tile size
         tile_size_k: Key/Value tile size
         return_lse: Return log-sum-exp (not implemented)
+        debug: Enable debug logging
 
     Returns:
         output: Attention output [B, H, N, D]
@@ -442,8 +444,9 @@ def sageattn3_torch_triton(
     if sm_scale is None:
         sm_scale = 1.0 / math.sqrt(D)
 
-    print(f"[Triton] Input shapes - Q: {q.shape}, K: {k.shape}, V: {v.shape}")
-    print(f"[Triton] Using Triton kernels with tile sizes Q={tile_size_q}, K={tile_size_k}")
+    if debug:
+        print(f"[Triton] Input shapes - Q: {q.shape}, K: {k.shape}, V: {v.shape}")
+        print(f"[Triton] Using Triton kernels with tile sizes Q={tile_size_q}, K={tile_size_k}")
 
     # Import QK smoothing from PyTorch version (for now)
     import sageattn3_torch
@@ -452,7 +455,8 @@ def sageattn3_torch_triton(
     # Step 1: QK smoothing with delta_s correction
     if per_block_mean:
         q_smoothed, k_smoothed, delta_s = apply_qk_smoothing(q, k)
-        print(f"[Triton] Applied QK smoothing, delta_s shape: {delta_s.shape}")
+        if debug:
+            print(f"[Triton] Applied QK smoothing, delta_s shape: {delta_s.shape}")
     else:
         q_smoothed, k_smoothed = q, k
         delta_s = None
@@ -472,8 +476,9 @@ def sageattn3_torch_triton(
         tile_size_k=tile_size_k
     )
 
-    print(f"[Triton] Output shape: {output.shape}")
-    print(f"[Triton] Output range: [{output.min().item():.6f}, {output.max().item():.6f}]")
+    if debug:
+        print(f"[Triton] Output shape: {output.shape}")
+        print(f"[Triton] Output range: [{output.min().item():.6f}, {output.max().item():.6f}]")
 
     if return_lse:
         return output, None

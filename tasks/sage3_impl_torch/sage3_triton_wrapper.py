@@ -30,6 +30,7 @@ def sage3_triton_sdpa_wrapper(
     dropout_p: float = 0.0,
     is_causal: bool = False,
     scale: Optional[float] = None,
+    debug: bool = False,
     **kwargs
 ) -> torch.Tensor:
     """
@@ -46,6 +47,7 @@ def sage3_triton_sdpa_wrapper(
         dropout_p: Dropout probability (not supported, will issue warning)
         is_causal: Whether to apply causal masking
         scale: Attention scale factor (default: 1/sqrt(D))
+        debug: Enable debug logging (default: False for clean output)
         **kwargs: Additional arguments (ignored)
 
     Returns:
@@ -56,12 +58,12 @@ def sage3_triton_sdpa_wrapper(
         - Dropout during attention is not supported
         - Tensor layout is assumed to be BHND (standard for most models)
     """
-    # Warn about unsupported features
-    if dropout_p > 0.0:
+    # Warn about unsupported features (only if debug mode)
+    if dropout_p > 0.0 and debug:
         warnings.warn(f"SageAttention3 doesn't support dropout_p={dropout_p}, ignoring",
                       UserWarning, stacklevel=2)
 
-    if attn_mask is not None:
+    if attn_mask is not None and debug:
         warnings.warn("SageAttention3 doesn't support arbitrary attention masks, ignoring",
                       UserWarning, stacklevel=2)
 
@@ -83,15 +85,17 @@ def sage3_triton_sdpa_wrapper(
             sm_scale=scale,  # Use provided scale or let Triton compute default
             per_block_mean=True,  # Enable QK smoothing (key SageAttention3 feature)
             tile_size_q=64,       # Default tile sizes for good performance
-            tile_size_k=64
+            tile_size_k=64,
+            debug=debug           # Pass debug flag to control logging
         )
 
         return output
 
     except Exception as e:
         # Fallback to PyTorch SDPA if Triton implementation fails
-        warnings.warn(f"SageAttention3 Triton failed ({e}), falling back to PyTorch SDPA",
-                      UserWarning, stacklevel=2)
+        if debug:
+            warnings.warn(f"SageAttention3 Triton failed ({e}), falling back to PyTorch SDPA",
+                          UserWarning, stacklevel=2)
 
         import torch.nn.functional as F
         # Call original SDPA (need to avoid recursion)
