@@ -16,7 +16,7 @@ if sage3_impl_path not in sys.path:
     sys.path.insert(0, sage3_impl_path)
 
 prompt_path = "videos/testing_prompts.txt"
-prompt_path = "videos/open_sora_prompts.txt"
+# prompt_path = "videos/open_sora_prompts.txt"
 
 
 class AttentionProportionProfiler:
