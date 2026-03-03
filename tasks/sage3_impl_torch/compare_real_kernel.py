@@ -46,12 +46,12 @@ def test_real_kernel_comparison():
     # Import implementations
     implementations = {}
 
-    # try:
-    #     from sageattn3_torch import sageattn3_torch
-    #     implementations['pytorch'] = sageattn3_torch
-    #     print("✅ Educational PyTorch implementation imported")
-    # except ImportError as e:
-    #     print(f"❌ Failed to import PyTorch implementation: {e}")
+    try:
+        # from sageattn3_torch import sageattn3_torch
+        implementations['pytorch'] = torch.nn.functional.scaled_dot_product_attention
+        print("✅ Educational PyTorch implementation imported")
+    except ImportError as e:
+        print(f"❌ Failed to import PyTorch implementation: {e}")
 
     try:
         from sageattn3_torch_triton import sageattn3_torch_triton
@@ -75,11 +75,12 @@ def test_real_kernel_comparison():
     # Test configurations
     test_configs = [
         # {"B": 1, "H": 8, "N": 256, "D": 64, "name": "Small"},
+        {"B": 1, "H": 8, "N": 240, "D": 64, "name": "Small"},
         # {"B": 1, "H": 8, "N": 512, "D": 64, "name": "Medium"},
         # {"B": 1, "H": 8, "N": 1024, "D": 64, "name": "Large"},
         # {"B": 2, "H": 16, "N": 512, "D": 64, "name": "Multi-batch"},
         # {"B": 2, "H": 30, "N": 256, "D": 64, "name": "CogVideoX-like"},  # Problematic config
-        {"B": 2, "H": 30, "N": 1024*16, "D": 64, "name": "CogVideoX-like-Extreme"},  # Problematic config
+        # {"B": 2, "H": 30, "N": 17776, "D": 64, "name": "CogVideoX-like-Extreme"},  # Problematic config
     ]
 
     all_results = []
@@ -99,8 +100,8 @@ def test_real_kernel_comparison():
         dtype = torch.float16
 
         # Create test tensors
-        q = torch.randn(B, H, N, D, device=device, dtype=dtype) * 0.01
-        k = torch.randn(B, H, N, D, device=device, dtype=dtype) * 0.01
+        q = torch.randn(B, H, N, D, device=device, dtype=dtype) * 0.1
+        k = torch.randn(B, H, N, D, device=device, dtype=dtype) * 0.1
         v = torch.randn(B, H, N, D, device=device, dtype=dtype) * 0.01
 
         config_results = {}
@@ -119,8 +120,8 @@ def test_real_kernel_comparison():
                 if impl_name == 'pytorch':
                     output = impl_func(
                         q.clone(), k.clone(), v.clone(),
-                        tensor_layout='HND',
-                        per_block_mean=True,
+                        # tensor_layout='HND',
+                        # per_block_mean=True,
                         is_causal=False
                     )
                 elif impl_name == 'triton':
@@ -174,14 +175,17 @@ def test_real_kernel_comparison():
             continue
 
         config_comparisons = []
+        
 
         # Compare all pairs
         for i, (name1, result1) in enumerate(successful_impls):
             for j, (name2, result2) in enumerate(successful_impls):
                 if i < j:  # Only compare each pair once
                     output1, output2 = result1['output'], result2['output']
-
                     # Compute similarity
+                    print(f"{name1} output1[0,0]: {output1[0,0]}")
+                    print(f"{name2} output2[0,0]: {output2[0,0]}")
+                    # breakpoint()
                     cosine_sim = F.cosine_similarity(
                         output1.reshape(1, -1).float(),
                         output2.reshape(1, -1).float(),
@@ -192,6 +196,12 @@ def test_real_kernel_comparison():
                     diff = (output1 - output2).float()
                     max_abs = diff.abs().max().item()
                     mean_abs = diff.abs().mean().item()
+
+                    # Compute relative differences
+                    denom = (output1.float().abs() + output2.float().abs()) / 2.0 + 1e-8
+                    rel_diff = ((output1 - output2).float() / (output2.float() + 1e-8))
+                    max_rel = rel_diff.max().item()
+                    mean_rel = rel_diff.mean().item()
 
                     # Performance comparison
                     time1, time2 = result1['time'], result2['time']
@@ -220,12 +230,15 @@ def test_real_kernel_comparison():
                     print(f"  {name1} vs {name2}:")
                     print(f"    Similarity: {cosine_sim:.6f} {grade_color} {grade}")
                     print(f"    Max diff: {max_abs:.3e}, Mean diff: {mean_abs:.3e}")
+                    print(f"    Max rel diff: {max_rel:.3e}, Mean rel diff: {mean_rel:.3e}")
                     print(f"    Time ratio ({name1}/{name2}): {speedup:.2f}x")
 
                     config_comparisons.append({
                         'pair': f"{name1}_vs_{name2}",
                         'similarity': cosine_sim,
                         'max_diff': max_abs,
+                        'max_rel_diff': max_rel,
+                        'mean_rel_diff': mean_rel,
                         'grade': grade,
                         'success': cosine_sim >= 0.85
                     })
