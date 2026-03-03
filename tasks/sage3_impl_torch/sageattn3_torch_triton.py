@@ -266,22 +266,24 @@ def tiled_online_attention_kernel(
 
             # Add delta_s correction if provided
             if has_delta_s:
-                # CRITICAL: Delta_s is indexed by K tile position, not Q tile position!
+                # CRITICAL: Delta_s indexing matches PyTorch reference exactly
                 #
-                # From real kernel analysis:
-                # - delta_s loading: tDSgDS(_, n_block) where n_block is K tile index
-                # - delta_s shape: [B, H, num_groups, N] where num_groups = seq_len // 128
-                # - The correction applies q_means[group] @ k[k_tile]^T
+                # From PyTorch reference (sageattn3_torch.py:977):
+                #   group_id = q_idx if delta_s.size(2) > 1 else 0
+                #   ds_tile = delta_s[:, :, group_id, k_start:k_end]
                 #
-                # For our Triton kernel:
-                # - k_start corresponds to n_block * BLOCK_N in real kernel
-                # - group_id should be based on Q tile position (which 128-element Q group)
-                GROUP_SIZE = 128  # Must match QK smoothing group size
-                group_id = (q_start // GROUP_SIZE) if num_groups > 1 else 0
+                # Key insight: Both implementations use tile_size_q = GROUP_SIZE = 128
+                # This means: group_id = q_tile_index = pid_m
+                #
+                # Mapping:
+                # - Q tile 0 (pos 0-127) → group 0 → delta_s[:,:,0,:]
+                # - Q tile 1 (pos 128-255) → group 1 → delta_s[:,:,1,:]
+                # - etc.
+                group_id = pid_m if num_groups > 1 else 0
                 group_id = tl.minimum(group_id, num_groups - 1)  # Bounds check - IMPORTANT!
 
-                # Load delta_s correction for this K tile
-                # delta_s[batch, head, group_id, k_start:k_end]
+                # Load delta_s correction for this Q tile and K tile range
+                # delta_s[batch, head, q_tile_idx, k_start:k_end]
                 ds_ptrs = (Delta_s_ptr +
                            pid_b * stride_delta_b +
                            pid_h * stride_delta_h +
@@ -291,7 +293,7 @@ def tiled_online_attention_kernel(
                 ds_mask = offs_n < N
                 ds_tile = tl.load(ds_ptrs, mask=ds_mask, other=0.0).to(tl.float32)
 
-                # Broadcast and add correction
+                # Broadcast and add correction - TIMING: BEFORE softmax (CRITICAL!)
                 ds_broadcasted = ds_tile[None, :]  # [1, BLOCK_N] -> broadcast to [BLOCK_M, BLOCK_N]
                 qk_tile = qk_tile + ds_broadcasted
 
@@ -321,7 +323,7 @@ def tiled_online_attention_kernel(
             qk_shifted = qk_tile - new_max[:, None]
             p_tile = tl.exp(qk_shifted)
 
-            # Two-level P quantization - TEMPORARILY DISABLED FOR DEBUGGING
+            # Two-level P quantization
             p_quantized = two_level_p_quantization_triton(p_tile)
             # PV computation
             pv_tile = tl.dot(p_quantized, v_tile, out_dtype=tl.float32)
@@ -335,7 +337,7 @@ def tiled_online_attention_kernel(
             output_tile = output_tile + pv_tile * beta[:, None]
 
     # Final normalization
-    output_tile = output_tile / (running_sum[:, None] + 1e-8)
+    output_tile = output_tile / (running_sum[:, None])
 
     # Store output
     out_ptrs = (Out_ptr +
@@ -477,7 +479,10 @@ def sageattn3_torch_triton(
     original_seq_len = N  # Store for final trimming
 
     if sm_scale is None:
-        sm_scale = 1.0 / math.sqrt(D)
+        # CORRECTED UNDERSTANDING: Real kernel uses 1/sqrt(D), not 1/sqrt(2*D)
+        # Real kernel (api.py:135): softmax_scale = (qlist[0].shape[-1] * 2) ** (-0.5)
+        # But qlist[0].shape[-1] = D//2 (FP4 packed), so this gives 1/sqrt(D)
+        sm_scale = 1.0 / math.sqrt(D)  # This was actually CORRECT originally
 
     if debug:
         print(f"[Triton] Input shapes - Q: {q.shape}, K: {k.shape}, V: {v.shape}")
