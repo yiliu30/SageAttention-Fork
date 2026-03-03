@@ -113,7 +113,9 @@ def sage3_triton_sdpa_wrapper(
         tile_size_k=128,
         debug=debug           # Pass debug flag to control logging
     )
-
+    # check nan/inf on output
+    if torch.isnan(output).any() or torch.isinf(output).any():
+        breakpoint()
     return output
 
 
