@@ -17,6 +17,9 @@ Key Features:
 import torch
 from typing import Optional
 import warnings
+import os
+
+_original_sdpa = torch.nn.functional.scaled_dot_product_attention
 
 # Import the main Triton implementation
 from sageattn3_torch_triton import sageattn3_torch_triton
@@ -31,6 +34,7 @@ def sage3_triton_sdpa_wrapper(
     is_causal: bool = False,
     scale: Optional[float] = None,
     debug: bool = False,
+    per_block_mean: Optional[bool] = None,
     **kwargs
 ) -> torch.Tensor:
     """
@@ -48,6 +52,7 @@ def sage3_triton_sdpa_wrapper(
         is_causal: Whether to apply causal masking
         scale: Attention scale factor (default: 1/sqrt(D))
         debug: Enable debug logging (default: False for clean output)
+        per_block_mean: Enable QK smoothing (None=auto-detect from env, True/False=override)
         **kwargs: Additional arguments (ignored)
 
     Returns:
@@ -57,6 +62,7 @@ def sage3_triton_sdpa_wrapper(
         - SageAttention3 doesn't support arbitrary attention masks (only causal)
         - Dropout during attention is not supported
         - Tensor layout is assumed to be BHND (standard for most models)
+        - per_block_mean can be disabled via SAGE3_DISABLE_PER_BLOCK_MEAN=1 environment variable
     """
     # Warn about unsupported features (only if debug mode)
     if dropout_p > 0.0 and debug:
@@ -66,6 +72,23 @@ def sage3_triton_sdpa_wrapper(
     if attn_mask is not None and debug:
         warnings.warn("SageAttention3 doesn't support arbitrary attention masks, ignoring",
                         UserWarning, stacklevel=2)
+
+    # Determine per_block_mean setting
+    # Priority: explicit parameter > environment variable > default (True)
+    if per_block_mean is not None:
+        use_per_block_mean = per_block_mean
+    else:
+        # Check environment variable
+        env_disable = os.getenv('SAGE3_DISABLE_PER_BLOCK_MEAN', '0').lower()
+        if env_disable in ('1', 'true', 'yes', 'on'):
+            use_per_block_mean = False
+            if debug:
+                print("[Wrapper] per_block_mean disabled by SAGE3_DISABLE_PER_BLOCK_MEAN environment variable")
+        else:
+            use_per_block_mean = True  # Default behavior
+
+    if debug:
+        print(f"[Wrapper] Using per_block_mean={use_per_block_mean}")
 
     # Extract tensor dimensions for validation
     B, H, N, D = query.shape
@@ -85,7 +108,7 @@ def sage3_triton_sdpa_wrapper(
         tensor_layout="HND",  # BHND layout expected
         is_causal=is_causal,
         sm_scale=scale,  # Use provided scale or let Triton compute default
-        per_block_mean=True,  # Enable QK smoothing (key SageAttention3 feature)
+        per_block_mean=use_per_block_mean,  # Configurable QK smoothing
         tile_size_q=128,      # Match real kernel tile sizes (128x128)
         tile_size_k=128,
         debug=debug           # Pass debug flag to control logging
