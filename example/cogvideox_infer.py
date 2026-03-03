@@ -180,7 +180,7 @@ if __name__ == "__main__":
     if args.quick_e2e:
         # img size
         selected_prompts = ["A dog is running in the park."]
-        num_frames = 6
+        num_frames = 1
         # height=128
         # width=128
 
