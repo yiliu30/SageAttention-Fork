@@ -75,6 +75,17 @@ output = sageattn3_torch(q, k, v,
                         tile_size_k=64)
 ```
 
+### Using the Triton-Optimized Version
+```python
+from sage3_triton_wrapper import sage3_triton_sdpa_wrapper
+
+# Drop-in replacement for F.scaled_dot_product_attention
+output = sage3_triton_sdpa_wrapper(q, k, v, is_causal=False)
+
+# Enable debug logging if needed
+output = sage3_triton_sdpa_wrapper(q, k, v, is_causal=False, debug=True)
+```
+
 ### Demo Script
 ```bash
 # Run basic demo
@@ -88,6 +99,15 @@ python demo_sageattn3.py --causal --seq-len 256
 
 # Show all options
 python demo_sageattn3.py --help
+```
+
+### CogVideoX Integration
+```bash
+# Clean inference (no debug logs)
+python cogvideox_infer.py --model cogvideox-2b --attention_type sage3_triton --smoke
+
+# Debug mode (with verbose Triton logs) - set debug=True in wrapper if needed
+# For debugging, modify sage3_triton_wrapper.py or add debug parameter support
 ```
 
 ## Implementation Notes
