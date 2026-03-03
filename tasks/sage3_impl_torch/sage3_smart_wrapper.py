@@ -38,7 +38,7 @@ def sage3_triton_sdpa_wrapper(
     dropout_p: float = 0.0,
     is_causal: bool = False,
     scale: Optional[float] = None,
-    mode: str = "sdpa",  # "sdpa", "sageattention3", or "auto"
+    mode: str = "sageattention3",  # "sdpa", "sageattention3", or "auto"
     debug: bool = False,
     **kwargs
 ) -> torch.Tensor:
