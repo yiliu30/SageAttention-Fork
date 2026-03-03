@@ -70,6 +70,21 @@ sageattention/
 └── fa3_wrapper.py      # FlashAttention3 compatibility wrapper
 ```
 
+### Sage 3 (Sage Attention 3) code and paper source 
+- Paper:
+    - ./papers/sageattention/SageAttention3-2505.11594.pdf
+    - ./papers/sageattention/sage_v3
+    - ./papers/sageattention/paper_summaries.md
+- Codebase:
+    - ./sageattention3_blackwell
+
+### E2E Example:
+- /mnt/disk1/yiliu7/SageAttention-Fork/example/cogvideox_infer.py
+```bash
+cd example
+python cogvideox_infer.py --model cogvideox-2b --attention_type sage
+```
+
 ### Key APIs
 
 **Primary Interface**:
@@ -120,3 +135,10 @@ F.scaled_dot_product_attention = sageattn  # Global replacement
 ### Test
 - python envs: /mnt/disk1/yiliu7/sage/bin/python
 - sage3 real kerenl demo: SageAttention-Fork/sageattention3_blackwell/examples/sageattn3_demo.py
+
+### Git Best Practices
+- **Create small, focused commits** instead of large commits with all changes
+  - Each commit should have a single, clear purpose (feat:, test:, docs:, fix:, refactor:)
+  - Makes git history easier to review and understand
+  - Enables safer rollbacks and better debugging
+  - Example: separate commits for implementation, tests, and documentation
