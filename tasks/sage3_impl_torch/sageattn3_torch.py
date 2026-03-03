@@ -298,7 +298,7 @@ def apply_qk_smoothing(
     k_smoothed = k_padded[:, :, :N, :]
 
     # Step 4: Compute delta_s = q_means @ k^T
-    delta_s = torch.matmul(q_means, k_smoothed.transpose(-2, -1)).to(torch.float32)
+    delta_s = torch.matmul(q_means, k_smoothed.transpose(-2, -1)).to(torch.float32).contiguous()
 
     logger.debug(f"QK smoothing: {num_groups} groups, delta_s shape: {delta_s.shape}")
 
