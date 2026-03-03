@@ -77,7 +77,7 @@ def sage3_triton_sdpa_wrapper(
     if debug:
         print("[Wrapper] Using SageAttention3 Triton implementation")
 
-    # Call the Triton implementation
+    # Call the Triton implementation with full SageAttention3 algorithm
     output = sageattn3_torch_triton(
         q=query,
         k=key,
@@ -86,8 +86,8 @@ def sage3_triton_sdpa_wrapper(
         is_causal=is_causal,
         sm_scale=scale,  # Use provided scale or let Triton compute default
         per_block_mean=True,  # Enable QK smoothing (key SageAttention3 feature)
-        tile_size_q=64,       # Default tile sizes for good performance
-        tile_size_k=64,
+        tile_size_q=128,      # Match real kernel tile sizes (128x128)
+        tile_size_k=128,
         debug=debug           # Pass debug flag to control logging
     )
 

@@ -244,7 +244,7 @@ def tiled_online_attention_kernel(
             if has_delta_s:
                 # Determine which group this query tile belongs to
                 group_id = pid_m if num_groups > 1 else 0
-                group_id = tl.minimum(group_id, num_groups - 1)
+                # group_id = tl.minimum(group_id, num_groups - 1)
 
                 # Load delta_s correction
                 ds_ptrs = (Delta_s_ptr +
@@ -324,8 +324,8 @@ def tiled_online_attention_triton(
     delta_s: Optional[torch.Tensor],
     sm_scale: float,
     is_causal: bool,
-    tile_size_q: int = 64,
-    tile_size_k: int = 64
+    tile_size_q: int = 128,
+    tile_size_k: int = 128
 ) -> torch.Tensor:
     """
     Triton implementation of tiled online attention.
@@ -410,8 +410,8 @@ def sageattn3_torch_triton(
     is_causal: bool = False,
     sm_scale: Optional[float] = None,
     per_block_mean: bool = True,
-    tile_size_q: int = 64,
-    tile_size_k: int = 64,
+    tile_size_q: int = 128,
+    tile_size_k: int = 128,
     return_lse: bool = False,
     debug: bool = False,
 ):

@@ -65,8 +65,8 @@ def sageattn3_torch(
     is_causal: bool = False,
     sm_scale: Optional[float] = None,
     per_block_mean: bool = True,
-    tile_size_q: int = 64,
-    tile_size_k: int = 64,
+    tile_size_q: int = 128,
+    tile_size_k: int = 128,
     return_lse: bool = False,
 ) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     """
