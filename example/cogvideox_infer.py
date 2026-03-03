@@ -91,6 +91,7 @@ def parse_args():
     parser.add_argument("-s",'--smoke', action='store_true', help='Run a smoke test')
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
     parser.add_argument("-q",'--quick_e2e', action='store_true', help='Run a quick end-to-end test')
+    parser.add_argument("-n",'--num_frames', type=int, default=None, help='Number of frames to process')
     parser.add_argument('--proportion', action='store_true', help='Measure attention kernel time proportion in the whole pipeline')
     parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'sage3_triton', 'fa3', 'fa3_fp8', ""], help='Attention type')
     parser.add_argument('-i','--save_frames', action='store_true', help='Save individual frames as PNG images')
@@ -181,6 +182,8 @@ if __name__ == "__main__":
         # img size
         selected_prompts = ["A dog is running in the park."]
         num_frames = 1
+        if args.num_frames is not None:
+            num_frames = args.num_frames
         # height=128
         # width=128
 
