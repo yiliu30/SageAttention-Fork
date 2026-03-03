@@ -261,8 +261,8 @@ def tiled_online_attention_kernel(
             v_mask = (offs_n[:, None] < N) & (offs_d[None, :] < HEAD_DIM)
             v_tile = tl.load(v_ptrs, mask=v_mask, other=0.0).to(tl.float32)
 
-            # Compute QK^T
-            qk_tile = tl.dot(q_tile, k_tile, out_dtype=tl.float32) * sm_scale
+            # Compute QK^T (do NOT apply sm_scale yet — delta_s must be added first)
+            qk_tile = tl.dot(q_tile, k_tile, out_dtype=tl.float32)
 
             # Add delta_s correction if provided
             if has_delta_s:
@@ -279,7 +279,7 @@ def tiled_online_attention_kernel(
                 # - Q tile 0 (pos 0-127) → group 0 → delta_s[:,:,0,:]
                 # - Q tile 1 (pos 128-255) → group 1 → delta_s[:,:,1,:]
                 # - etc.
-                group_id = pid_m if num_groups > 1 else 0
+                group_id = (q_start) // 128 if num_groups > 1 else 0
                 group_id = tl.minimum(group_id, num_groups - 1)  # Bounds check - IMPORTANT!
 
                 # Load delta_s correction for this Q tile and K tile range
@@ -293,9 +293,15 @@ def tiled_online_attention_kernel(
                 ds_mask = offs_n < N
                 ds_tile = tl.load(ds_ptrs, mask=ds_mask, other=0.0).to(tl.float32)
 
-                # Broadcast and add correction - TIMING: BEFORE softmax (CRITICAL!)
+                # Broadcast and add correction — BEFORE scaling (CRITICAL!)
+                # Real kernel: acc = delta_s, then gemm accumulates QK^T, then
+                # softmax applies scale to the COMBINED (QK^T + delta_s).
                 ds_broadcasted = ds_tile[None, :]  # [1, BLOCK_N] -> broadcast to [BLOCK_M, BLOCK_N]
                 qk_tile = qk_tile + ds_broadcasted
+
+            # Apply sm_scale AFTER adding delta_s to match real kernel:
+            # real kernel computes softmax((QK^T + delta_s) * sm_scale)
+            qk_tile = qk_tile * sm_scale
 
             # Apply causal mask
             if is_causal:
@@ -312,9 +318,8 @@ def tiled_online_attention_kernel(
             old_max = running_max
             new_max = tl.maximum(running_max, tile_max)
 
-            # Renormalization factors
+            # Renormalization factor
             alpha = tl.exp(old_max - new_max)
-            beta = tl.exp(tile_max - new_max)
 
             # Update output with renormalization
             output_tile = output_tile * alpha[:, None]
@@ -328,13 +333,16 @@ def tiled_online_attention_kernel(
             # PV computation
             pv_tile = tl.dot(p_quantized, v_tile, out_dtype=tl.float32)
 
-            # Update running statistics - USE SAME PROBABILITIES AS DOT PRODUCT!
-            tile_sum = tl.sum(p_quantized, axis=1)  # [BLOCK_M] - CRITICAL FIX!
-            running_sum = running_sum * alpha + tile_sum * beta
+            # Update running statistics
+            # p_tile is already relative to new_max (not tile_max), so no beta factor needed.
+            # Real kernel (softmax_fused.h): row_sum += exp2(acc * scale - max_scaled)
+            # — accumulates directly without beta.
+            tile_sum = tl.sum(p_quantized, axis=1)  # [BLOCK_M]
+            running_sum = running_sum * alpha + tile_sum
             running_max = new_max
 
-            # Accumulate output
-            output_tile = output_tile + pv_tile * beta[:, None]
+            # Accumulate output (no beta — pv_tile already uses new_max-shifted probs)
+            output_tile = output_tile + pv_tile
 
     # Final normalization
     output_tile = output_tile / (running_sum[:, None])
