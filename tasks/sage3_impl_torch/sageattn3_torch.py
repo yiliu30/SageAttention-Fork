@@ -969,16 +969,22 @@ def tiled_online_attention(
             k_tile = k[:, :, k_start:k_end, :]
             v_tile = v[:, :, k_start:k_end, :]
 
-            # Step 1: Compute QK^T
-            qk_tile = torch.matmul(q_tile, k_tile.transpose(-2, -1)) * sm_scale
+            # Step 1: Compute QK^T (do NOT scale yet — delta_s must be added first)
+            qk_tile = torch.matmul(q_tile, k_tile.transpose(-2, -1))
 
-            # Step 2: Add delta_s correction BEFORE softmax (CRITICAL!)
+            # Step 2: Add delta_s correction BEFORE scaling (CRITICAL!)
+            # Real kernel: acc = delta_s, gemm accumulates QK^T, then softmax
+            # applies scale to the COMBINED (QK^T + delta_s).
             if delta_s is not None:
                 group_id = q_idx if delta_s.size(2) > 1 else 0
                 if group_id < delta_s.size(2):
                     ds_tile = delta_s[:, :, group_id, k_start:k_end]
                     ds_broadcasted = ds_tile.unsqueeze(2).expand(-1, -1, q_end - q_start, -1)
                     qk_tile = qk_tile + ds_broadcasted
+
+            # Apply sm_scale AFTER adding delta_s to match real kernel:
+            # real kernel computes softmax((QK^T + delta_s) * sm_scale)
+            qk_tile = qk_tile * sm_scale
 
             # Step 3: Apply causal mask
             if is_causal:
@@ -994,7 +1000,7 @@ def tiled_online_attention(
             new_max = torch.maximum(running_max, tile_max)
 
             alpha = torch.exp(old_max - new_max)
-            beta = torch.exp(tile_max - new_max)
+            # beta = torch.exp(tile_max - new_max)
 
             # Update output with renormalization
             output_tile = output_tile * alpha.unsqueeze(-1).to(q.dtype)
@@ -1010,11 +1016,12 @@ def tiled_online_attention(
             pv_tile = torch.matmul(p_quantized.to(v_tile.dtype), v_tile)
 
             # Update running statistics
-            running_sum = running_sum * alpha + p_tile.sum(dim=-1).float() * beta
+            # p_tile is already relative to new_max (not tile_max), so no beta needed.
+            running_sum = running_sum * alpha + p_tile.sum(dim=-1).float()
             running_max = new_max
 
-            # Accumulate output
-            output_tile = output_tile + pv_tile * beta.unsqueeze(-1).to(q.dtype)
+            # Accumulate output (no beta — pv_tile already uses new_max-shifted probs)
+            output_tile = output_tile + pv_tile
 
         # Final normalization
         output_tile = output_tile / (running_sum.unsqueeze(-1).to(q.dtype) + 1e-8)
