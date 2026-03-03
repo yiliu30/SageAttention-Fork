@@ -1,12 +1,20 @@
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import torch, argparse, gc
+import sys
 from tqdm import tqdm
 from diffusers import CogVideoXPipeline
 from diffusers.utils import export_to_video
 # from sageattention import sageattn
 import torch.nn.functional as F
 import time
+
+# Add sage3_impl_torch to path for sage3_triton imports
+sage3_impl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
+                               'tasks', 'sage3_impl_torch')
+if sage3_impl_path not in sys.path:
+    sys.path.insert(0, sage3_impl_path)
+
 prompt_path = "videos/testing_prompts.txt"
 prompt_path = "videos/open_sora_prompts.txt"
 
@@ -83,7 +91,7 @@ def parse_args():
     parser.add_argument("-s",'--smoke', action='store_true', help='Run a smoke test')
     parser.add_argument("-p",'--profile', action='store_true', help='Run a profiling test')
     parser.add_argument('--proportion', action='store_true', help='Measure attention kernel time proportion in the whole pipeline')
-    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'fa3', 'fa3_fp8'], help='Attention type')
+    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'sage3_triton', 'fa3', 'fa3_fp8', ""], help='Attention type')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
     args = parser.parse_args()
@@ -108,6 +116,9 @@ if __name__ == "__main__":
     elif args.attention_type == 'sage3':
         from sageattn3 import sageattn3_blackwell
         F.scaled_dot_product_attention = sageattn3_blackwell
+    elif args.attention_type == 'sage3_triton':
+        from sage3_triton_wrapper import sage3_triton_sdpa_wrapper
+        F.scaled_dot_product_attention = sage3_triton_sdpa_wrapper
     elif args.attention_type == 'fa3':
         from sageattention.fa3_wrapper import fa3
         F.scaled_dot_product_attention = fa3
