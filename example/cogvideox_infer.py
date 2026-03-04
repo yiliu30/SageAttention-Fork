@@ -15,8 +15,13 @@ sage3_impl_path = os.path.join(os.path.dirname(os.path.dirname(__file__)),
 if sage3_impl_path not in sys.path:
     sys.path.insert(0, sage3_impl_path)
 
+# Add standalone to path for standalone SageAttention3 imports
+standalone_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'standalone')
+if standalone_path not in sys.path:
+    sys.path.insert(0, standalone_path)
+
 prompt_path = "videos/testing_prompts.txt"
-# prompt_path = "videos/open_sora_prompts.txt"
+prompt_path = "videos/open_sora_prompts.txt"
 
 
 class AttentionProportionProfiler:
@@ -93,7 +98,7 @@ def parse_args():
     parser.add_argument("-q",'--quick_e2e', action='store_true', help='Run a quick end-to-end test')
     parser.add_argument("-n",'--num_frames', type=int, default=None, help='Number of frames to process')
     parser.add_argument('--proportion', action='store_true', help='Measure attention kernel time proportion in the whole pipeline')
-    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'sage3_triton', 'fa3', 'fa3_fp8', ""], help='Attention type')
+    parser.add_argument('--attention_type', type=str, default='sdpa', choices=['sdpa', 'sage', 'sage3', 'sage3_triton', 'sage3_standalone', 'fa3', 'fa3_fp8', ""], help='Attention type')
     parser.add_argument('-i','--save_frames', action='store_true', help='Save individual frames as PNG images')
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
@@ -122,6 +127,19 @@ if __name__ == "__main__":
     elif args.attention_type == 'sage3_triton':
         from sage3_triton_wrapper import sage3_triton_sdpa_wrapper
         F.scaled_dot_product_attention = sage3_triton_sdpa_wrapper
+    elif args.attention_type == 'sage3_standalone':
+        # Set environment variables for optimal performance (can be overridden by user)
+        if 'SAGE3_DEBUG' not in os.environ:
+            os.environ['SAGE3_DEBUG'] = '0'  # Disable debug by default for performance
+        if 'SAGE3_BENCHMARK' not in os.environ:
+            os.environ['SAGE3_BENCHMARK'] = '1' if args.proportion else '0'  # Enable benchmarking in proportion mode
+
+        from sageattention3_standalone import scaled_dot_product_attention
+        print(f"✅ Using SageAttention3 Standalone implementation")
+        print(f"   Location: {standalone_path}")
+        print(f"   Features: Complete algorithm with QK smoothing, two-level quantization, and Triton kernels")
+        print(f"   Environment: SAGE3_DEBUG={os.environ.get('SAGE3_DEBUG')}, SAGE3_BENCHMARK={os.environ.get('SAGE3_BENCHMARK')}")
+        F.scaled_dot_product_attention = scaled_dot_product_attention
     elif args.attention_type == 'fa3':
         from sageattention.fa3_wrapper import fa3
         F.scaled_dot_product_attention = fa3
