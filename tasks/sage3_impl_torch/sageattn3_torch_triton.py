@@ -89,68 +89,147 @@ def nvfp4_quantize_triton(x_block, block_size: tl.constexpr):
     return x_quantized, scale
 
 @triton.jit
-def two_level_p_quantization_triton(p_tile):
+def round_to_e4m3_triton(scale):
     """
-    Two-level P quantization with 16-element block awareness - STABLE VERSION.
+    Round scale to E4M3 precision using mathematical approximation.
 
-    This version maintains the original stable per-row structure but adds
-    16-element block awareness through improved scaling patterns.
+    E4M3 format has 4 exponent bits and 3 mantissa bits.
+    This function approximates the rounding behavior of the real kernel's
+    E4M3 round-trip conversion.
 
-    Key Improvement: Block-size aware scaling coefficients
-    =====================================================
-    - Level 1: FP8 global scale per attention row (max = 448)
-    - Level 2: Enhanced microscaling with 16-element position awareness
-    - Combined scale factor: 448 × 6 = 2688
+    The real kernel does:
+    float SFValue = vecMax / 6.0f;
+    uint8_t SFValueFP8;
+    reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);
+    SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8)); // Back to FP32
+    """
+    # Approximate E4M3 precision using quantization to limited precision
+    # E4M3 has 3 mantissa bits, so 2^3 = 8 discrete levels per power of 2
+    quantization_levels = 256.0  # Approximate FP8 precision
+    return tl.floor(scale * quantization_levels + 0.5) / quantization_levels
 
-    The core fix: Instead of uniform per-row scaling, use position-dependent
-    scaling that creates 16-element block patterns for better real kernel alignment.
+@triton.jit
+def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
+    """
+    Corrected two-level P quantization with TRUE 16-element block microscaling.
+
+    For fixed 128x128 tiles, computes microscales based on the actual maximum
+    value within each 16-element block (across all rows in that block).
+
+    Key features:
+    - Each 16-element block gets microscale = max(abs(block_elements)) / 6.0
+    - No loops - uses vectorized operations for 8 blocks (128/16=8)
+    - E4M3 rounding applied to block-based microscales
+    - All elements in same 16-element block use identical microscales
 
     Args:
-        p_tile: [BLOCK_M, BLOCK_N] attention probabilities
+        p_tile: [128, 128] attention probabilities (fixed size)
+        BLOCK_N: Column dimension as compile-time constant (must be 128)
 
     Returns:
-        p_quantized: [BLOCK_M, BLOCK_N] quantized probabilities
+        p_quantized: [128, 128] quantized probabilities
     """
+    MICROSCALE_BLOCK_SIZE = 16
     FP8_MAX = 448.0
     FP4_MAX = 6.0
-    COMBINED_SCALE = FP8_MAX * FP4_MAX  # 2688
+    COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
 
-    # Level 1: Global FP8 scaling per attention row (unchanged - stable)
-    row_max = tl.max(tl.abs(p_tile), axis=1)  # [BLOCK_M]
-    global_fp8_scales = tl.maximum(row_max / COMBINED_SCALE, 1e-8)
+    # Level 1: Global per-row FP32 scaling
+    row_max = tl.max(tl.abs(p_tile), axis=1)
+    global_scales = tl.maximum(row_max / COMBINED_MAX, 1e-8)
+    p_level1 = p_tile / global_scales[:, None]
 
-    # Apply level 1 scaling
-    p_level1_scaled = p_tile / global_fp8_scales[:, None]
+    # Level 2: TRUE 16-element block microscaling
+    # For 128 columns, we have exactly 8 blocks of 16 elements each
+    # Block 0: cols 0-15, Block 1: cols 16-31, ..., Block 7: cols 112-127
 
-    # Level 2: Enhanced microscaling with 16-element awareness
-    # Core improvement: Add block-position coefficients to per-row scaling
+    col_indices = tl.arange(0, BLOCK_N)
+    block_ids = col_indices // MICROSCALE_BLOCK_SIZE
 
-    # Original per-row approach (stable baseline)
-    row_max_level2 = tl.max(tl.abs(p_level1_scaled), axis=1)  # [BLOCK_M]
-    base_microscale_fp4_scales = tl.maximum(row_max_level2 / FP4_MAX, 1e-8)
+    # Vectorized computation of block maximums (no loops!)
+    # For each block, find the maximum across all elements in that block
 
-    # NEW: Add 16-element block position awareness
-    col_idx = tl.arange(0, p_tile.shape[1])
-    block_position = col_idx % 16  # Position within 16-element block (0-15)
+    # Block 0 (columns 0-15): Extract and find maximum
+    block_0_mask = (col_indices >= 0) & (col_indices < 16)
+    p_block_0 = tl.where(block_0_mask[None, :], tl.abs(p_level1), 0.0)
+    block_0_max = tl.max(p_block_0)  # Maximum across entire block (all rows, cols 0-15)
 
-    # Create position-dependent scaling coefficient
-    # This makes elements in the same 16-element block more similar
-    # while maintaining the stable per-row baseline
-    position_coefficient = 1.0 + 0.05 * tl.sin(block_position * 3.14159 / 16.0)
+    # Block 1 (columns 16-31)
+    block_1_mask = (col_indices >= 16) & (col_indices < 32)
+    p_block_1 = tl.where(block_1_mask[None, :], tl.abs(p_level1), 0.0)
+    block_1_max = tl.max(p_block_1)
 
-    # Apply position-aware scaling (small modification to maintain stability)
-    enhanced_microscale_scales = (base_microscale_fp4_scales[:, None] *
-                                position_coefficient[None, :])
+    # Block 2 (columns 32-47)
+    block_2_mask = (col_indices >= 32) & (col_indices < 48)
+    p_block_2 = tl.where(block_2_mask[None, :], tl.abs(p_level1), 0.0)
+    block_2_max = tl.max(p_block_2)
 
-    # Apply level 2 microscaling
-    p_microscaled = p_level1_scaled / enhanced_microscale_scales
+    # Block 3 (columns 48-63)
+    block_3_mask = (col_indices >= 48) & (col_indices < 64)
+    p_block_3 = tl.where(block_3_mask[None, :], tl.abs(p_level1), 0.0)
+    block_3_max = tl.max(p_block_3)
 
-    # Apply FP4 quantization
+    # Block 4 (columns 64-79)
+    block_4_mask = (col_indices >= 64) & (col_indices < 80)
+    p_block_4 = tl.where(block_4_mask[None, :], tl.abs(p_level1), 0.0)
+    block_4_max = tl.max(p_block_4)
+
+    # Block 5 (columns 80-95)
+    block_5_mask = (col_indices >= 80) & (col_indices < 96)
+    p_block_5 = tl.where(block_5_mask[None, :], tl.abs(p_level1), 0.0)
+    block_5_max = tl.max(p_block_5)
+
+    # Block 6 (columns 96-111)
+    block_6_mask = (col_indices >= 96) & (col_indices < 112)
+    p_block_6 = tl.where(block_6_mask[None, :], tl.abs(p_level1), 0.0)
+    block_6_max = tl.max(p_block_6)
+
+    # Block 7 (columns 112-127)
+    block_7_mask = (col_indices >= 112) & (col_indices < 128)
+    p_block_7 = tl.where(block_7_mask[None, :], tl.abs(p_level1), 0.0)
+    block_7_max = tl.max(p_block_7)
+
+    # Compute microscales for each block: block_max / 6.0
+    block_0_microscale = tl.maximum(block_0_max / FP4_MAX, 1e-8)
+    block_1_microscale = tl.maximum(block_1_max / FP4_MAX, 1e-8)
+    block_2_microscale = tl.maximum(block_2_max / FP4_MAX, 1e-8)
+    block_3_microscale = tl.maximum(block_3_max / FP4_MAX, 1e-8)
+    block_4_microscale = tl.maximum(block_4_max / FP4_MAX, 1e-8)
+    block_5_microscale = tl.maximum(block_5_max / FP4_MAX, 1e-8)
+    block_6_microscale = tl.maximum(block_6_max / FP4_MAX, 1e-8)
+    block_7_microscale = tl.maximum(block_7_max / FP4_MAX, 1e-8)
+
+    # Apply E4M3 rounding to each block's microscale
+    block_0_microscale_e4m3 = round_to_e4m3_triton(block_0_microscale)
+    block_1_microscale_e4m3 = round_to_e4m3_triton(block_1_microscale)
+    block_2_microscale_e4m3 = round_to_e4m3_triton(block_2_microscale)
+    block_3_microscale_e4m3 = round_to_e4m3_triton(block_3_microscale)
+    block_4_microscale_e4m3 = round_to_e4m3_triton(block_4_microscale)
+    block_5_microscale_e4m3 = round_to_e4m3_triton(block_5_microscale)
+    block_6_microscale_e4m3 = round_to_e4m3_triton(block_6_microscale)
+    block_7_microscale_e4m3 = round_to_e4m3_triton(block_7_microscale)
+
+    # Create the final microscale tensor: each column gets its block's microscale
+    microscale_final = (
+        tl.where(block_ids == 0, block_0_microscale_e4m3,
+        tl.where(block_ids == 1, block_1_microscale_e4m3,
+        tl.where(block_ids == 2, block_2_microscale_e4m3,
+        tl.where(block_ids == 3, block_3_microscale_e4m3,
+        tl.where(block_ids == 4, block_4_microscale_e4m3,
+        tl.where(block_ids == 5, block_5_microscale_e4m3,
+        tl.where(block_ids == 6, block_6_microscale_e4m3,
+                                 block_7_microscale_e4m3)))))))
+    )
+
+    # Broadcast to tensor dimensions [128, 128]
+    microscale_broadcasted = microscale_final[None, :]  # [1, 128] -> [128, 128]
+
+    # Apply microscaling and quantization
+    p_microscaled = p_level1 / microscale_broadcasted
     p_quantized = apply_nvfp4_e2m1_quantization_triton(p_microscaled)
 
     # Reconstruct with both scale levels
-    p_final = (p_quantized * enhanced_microscale_scales *
-              global_fp8_scales[:, None])
+    p_final = (p_quantized * microscale_broadcasted * global_scales[:, None])
 
     return p_final
 
@@ -329,7 +408,7 @@ def tiled_online_attention_kernel(
             p_tile = tl.exp(qk_shifted)
 
             # Two-level P quantization
-            p_quantized = two_level_p_quantization_triton(p_tile)
+            p_quantized = two_level_p_quantization_triton(p_tile, BLOCK_N)
             # PV computation
             pv_tile = tl.dot(p_quantized, v_tile, out_dtype=tl.float32)
 
