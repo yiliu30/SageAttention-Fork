@@ -7,9 +7,8 @@ the performance differences between vectorized and sequential operations.
 
 import torch
 import time
-import matplotlib.pyplot as plt
 import numpy as np
-from naive_attention import naive_attention_standard, naive_attention_online_softmax
+from naive_attention import naive_attention_standard, naive_attention_online_softmax, naive_attention_scan_like
 
 def benchmark_sequence_lengths():
     """Benchmark performance across different sequence lengths."""
@@ -27,12 +26,14 @@ def benchmark_sequence_lengths():
         'seq_lengths': seq_lengths,
         'standard_times': [],
         'online_times': [],
-        'slowdown_factors': []
+        'scan_like_times': [],
+        'online_slowdown_factors': [],
+        'scan_like_slowdown_factors': []
     }
 
     print(f"\nTesting with batch_size={batch_size}, num_heads={num_heads}, head_dim={head_dim}")
-    print(f"{'Seq Len':<8} {'Standard (ms)':<15} {'Online (ms)':<15} {'Slowdown Factor':<15}")
-    print("-" * 60)
+    print(f"{'Seq Len':<8} {'Standard (ms)':<15} {'Online (ms)':<15} {'Scan-like (ms)':<15} {'Online vs Std':<12} {'Scan vs Std':<12}")
+    print("-" * 90)
 
     for seq_len in seq_lengths:
         # Create test tensors
@@ -61,13 +62,26 @@ def benchmark_sequence_lengths():
             times.append((time.perf_counter() - start) * 1000)
         online_time = np.mean(times)
 
-        slowdown = online_time / standard_time
+        # Benchmark scan-like softmax (optimized)
+        times = []
+        for _ in range(10):
+            start = time.perf_counter()
+            _ = naive_attention_scan_like(q, k, v)
+            if device.type == 'cuda':
+                torch.cuda.synchronize()
+            times.append((time.perf_counter() - start) * 1000)
+        scan_like_time = np.mean(times)
+
+        online_slowdown = online_time / standard_time
+        scan_like_slowdown = scan_like_time / standard_time
 
         results['standard_times'].append(standard_time)
         results['online_times'].append(online_time)
-        results['slowdown_factors'].append(slowdown)
+        results['scan_like_times'].append(scan_like_time)
+        results['online_slowdown_factors'].append(online_slowdown)
+        results['scan_like_slowdown_factors'].append(scan_like_slowdown)
 
-        print(f"{seq_len:<8} {standard_time:<15.3f} {online_time:<15.3f} {slowdown:<15.1f}x")
+        print(f"{seq_len:<8} {standard_time:<15.3f} {online_time:<15.3f} {scan_like_time:<15.3f} {online_slowdown:<12.1f}x {scan_like_slowdown:<12.1f}x")
 
     return results
 
@@ -92,6 +106,14 @@ def analyze_complexity():
     print("  Total loop: N × O(N²) = O(N³)")
     print("  Final P @ V: O(N²·D)")
     print("  Overall: O(N³ + N²·D) with low parallelism")
+
+    print("\nScan-like Softmax (Optimized Sequential):")
+    print("  1. Q @ K^T:           O(N²·D) - single matrix multiplication")
+    print("  2. Cumulative max:    O(N²) - vectorized cummax operation")
+    print("  3. Online loop:       O(N) iterations with O(N) work each = O(N²)")
+    print("  4. Final P @ V:       O(N²·D) - single matrix multiplication")
+    print("  Total: O(N²·D + N²) with better GPU utilization")
+    print("  Improvement: Eliminates O(N³) term, reduces constant factors")
 
 def demonstrate_loop_overhead():
     """Demonstrate the specific overhead of the sequential loop."""
@@ -234,13 +256,19 @@ def main():
         suggest_optimizations()
 
         print(f"\n📊 SUMMARY:")
-        print(f"  • Online softmax is {results['slowdown_factors'][-1]:.0f}x slower at seq_len=512")
+        online_final_slowdown = results['online_slowdown_factors'][-1]
+        scan_like_final_slowdown = results['scan_like_slowdown_factors'][-1]
+
+        print(f"  • Online softmax is {online_final_slowdown:.0f}x slower than standard at seq_len=512")
+        print(f"  • Scan-like softmax is {scan_like_final_slowdown:.0f}x slower than standard at seq_len=512")
+        improvement = online_final_slowdown / scan_like_final_slowdown
+        print(f"  • Scan-like is {improvement:.1f}x faster than online softmax")
         print(f"  • Slowdown grows roughly O(N) with sequence length")
         print(f"  • Main causes: sequential processing + loop overhead")
         print(f"  • Solution: Block-wise processing (FlashAttention)")
 
         print(f"\n✅ This educational implementation demonstrates the concept")
-        print(f"   but is intentionally unoptimized for clarity!")
+        print(f"   Scan-like approach shows how to optimize while maintaining clarity!")
 
     except Exception as e:
         print(f"Analysis failed: {e}")

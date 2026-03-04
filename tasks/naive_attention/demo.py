@@ -1,33 +1,32 @@
 """
-Educational Demo for Naive Attention with Online Softmax
+Educational Demo for Naive Attention with Online Softmax Implementations
 
 This demo script provides an educational walkthrough of naive attention implementation,
-comparing standard torch.softmax with the online softmax algorithm from FlashAttention.
+comparing standard torch.softmax with the online softmax algorithm and scan-like
+optimization from FlashAttention principles.
 
 The demo includes:
 1. Step-by-step explanation of attention computation
-2. Visual comparison of outputs between methods
+2. Visual comparison of outputs between all methods
 3. Detailed analysis of numerical differences
-4. Educational insights about the online softmax algorithm
-5. Performance timing comparisons
+4. Educational insights about the online softmax algorithms
+5. Performance timing comparisons between implementations
 
 Run this script to understand how attention works at a fundamental level and see
-how the online softmax algorithm achieves the same results with better numerical stability.
+how different algorithmic approaches achieve the same results with various trade-offs.
 """
 
 import torch
 import torch.nn.functional as F
 import numpy as np
 import time
-import matplotlib.pyplot as plt
-import seaborn as sns
-from pathlib import Path
 
 # Import our implementations
 from naive_attention import (
     naive_attention,
     naive_attention_standard,
     naive_attention_online_softmax,
+    naive_attention_scan_like,
     compare_attention_methods
 )
 
@@ -219,16 +218,37 @@ def demonstrate_numerical_stability():
         print(f"Online softmax failed: {e}")
         online_output = None
 
-    # Compare if both worked
-    if standard_output is not None and online_output is not None:
-        max_diff = torch.abs(standard_output - online_output).max().item()
-        print(f"Maximum difference between methods: {max_diff:.2e}")
+    # Test scan-like softmax
+    try:
+        scan_like_output = naive_attention_scan_like(q, k, v)
+        scan_like_has_nan = torch.isnan(scan_like_output).any()
+        scan_like_has_inf = torch.isinf(scan_like_output).any()
+        print(f"Scan-like softmax - NaN: {scan_like_has_nan}, Inf: {scan_like_has_inf}")
+    except Exception as e:
+        print(f"Scan-like softmax failed: {e}")
+        scan_like_output = None
 
-        cos_sim = F.cosine_similarity(
+    # Compare if all worked
+    if all(out is not None for out in [standard_output, online_output, scan_like_output]):
+        online_diff = torch.abs(standard_output - online_output).max().item()
+        scan_like_diff = torch.abs(standard_output - scan_like_output).max().item()
+        online_scan_diff = torch.abs(online_output - scan_like_output).max().item()
+
+        print(f"Standard vs Online difference: {online_diff:.2e}")
+        print(f"Standard vs Scan-like difference: {scan_like_diff:.2e}")
+        print(f"Online vs Scan-like difference: {online_scan_diff:.2e}")
+
+        cos_sim_online = F.cosine_similarity(
             standard_output.flatten().unsqueeze(0),
             online_output.flatten().unsqueeze(0)
         ).item()
-        print(f"Cosine similarity: {cos_sim:.6f}")
+        cos_sim_scan = F.cosine_similarity(
+            standard_output.flatten().unsqueeze(0),
+            scan_like_output.flatten().unsqueeze(0)
+        ).item()
+
+        print(f"Standard vs Online cosine similarity: {cos_sim_online:.6f}")
+        print(f"Standard vs Scan-like cosine similarity: {cos_sim_scan:.6f}")
 
 
 def run_comprehensive_comparison():
@@ -247,8 +267,8 @@ def run_comprehensive_comparison():
     ]
 
     print_subsection("Testing Different Configurations")
-    print(f"{'Config':<20} {'Cosine Sim':<12} {'Max Diff':<12} {'Mean Diff':<12} {'Status'}")
-    print("-" * 70)
+    print(f"{'Config':<15} {'Method':<9} {'Cosine Sim':<10} {'Max Diff':<10} {'Mean Diff':<10} {'Status'}")
+    print("-" * 80)
 
     all_passed = True
 
@@ -259,21 +279,29 @@ def run_comprehensive_comparison():
         v = torch.randn(batch_size, num_heads, seq_len, head_dim, device=device)
 
         # Run comparison
-        pytorch_out, standard_out, online_out, metrics = compare_attention_methods(q, k, v)
+        pytorch_out, standard_out, online_out, scan_like_out, metrics = compare_attention_methods(q, k, v)
 
         # Extract key metrics
-        cos_sim = metrics['cosine_sim_standard_vs_online']
-        max_diff = metrics['max_abs_diff_standard_vs_online']
-        mean_diff = metrics['mean_abs_diff_standard_vs_online']
+        cos_sim_online = metrics['cosine_sim_standard_vs_online']
+        cos_sim_scan = metrics['cosine_sim_standard_vs_scan_like']
+        max_diff_online = metrics['max_abs_diff_standard_vs_online']
+        max_diff_scan = metrics['max_abs_diff_standard_vs_scan_like']
+        mean_diff_online = metrics['mean_abs_diff_standard_vs_online']
+        mean_diff_scan = metrics['mean_abs_diff_standard_vs_scan_like']
 
         # Check if passed
-        passed = cos_sim > 0.95 and max_diff < 1e-4 and mean_diff < 1e-5
-        status = "✓ PASS" if passed else "✗ FAIL"
-        if not passed:
+        online_passed = cos_sim_online > 0.95 and max_diff_online < 1e-4 and mean_diff_online < 1e-5
+        scan_passed = cos_sim_scan > 0.95 and max_diff_scan < 1e-4 and mean_diff_scan < 1e-5
+
+        status_online = "✓ PASS" if online_passed else "✗ FAIL"
+        status_scan = "✓ PASS" if scan_passed else "✗ FAIL"
+
+        if not (online_passed and scan_passed):
             all_passed = False
 
         config_str = f"({batch_size},{num_heads},{seq_len},{head_dim})"
-        print(f"{config_str:<20} {cos_sim:<12.6f} {max_diff:<12.2e} {mean_diff:<12.2e} {status}")
+        print(f"{config_str:<15} Online   {cos_sim_online:<9.6f} {max_diff_online:<9.2e} {mean_diff_online:<9.2e} {status_online}")
+        print(f"{'':<15} Scan-like {cos_sim_scan:<9.6f} {max_diff_scan:<9.2e} {mean_diff_scan:<9.2e} {status_scan}")
 
     print(f"\nOverall: {'✓ ALL TESTS PASSED' if all_passed else '✗ SOME TESTS FAILED'}")
 
@@ -306,7 +334,8 @@ def benchmark_performance():
     methods = {
         'PyTorch SDPA': lambda: F.scaled_dot_product_attention(q, k, v),
         'Standard Softmax': lambda: naive_attention_standard(q, k, v),
-        'Online Softmax': lambda: naive_attention_online_softmax(q, k, v)
+        'Online Softmax': lambda: naive_attention_online_softmax(q, k, v),
+        'Scan-like Softmax': lambda: naive_attention_scan_like(q, k, v)
     }
 
     results = {}
@@ -400,23 +429,33 @@ def demonstrate_causal_attention():
         print(f"  [{row_str}] sum={row_sum:.3f}")
 
     # Compare our implementation
-    print_subsection("Verification Against Our Implementation")
-    our_output = naive_attention_online_softmax(q, k, v, is_causal=True)
+    print_subsection("Verification Against Our Implementations")
+    online_output = naive_attention_online_softmax(q, k, v, is_causal=True)
+    scan_like_output = naive_attention_scan_like(q, k, v, is_causal=True)
     pytorch_output = F.scaled_dot_product_attention(q, k, v, is_causal=True)
 
-    max_diff = torch.abs(our_output - pytorch_output).max().item()
-    cos_sim = F.cosine_similarity(our_output.flatten().unsqueeze(0),
-                                pytorch_output.flatten().unsqueeze(0)).item()
+    online_diff = torch.abs(online_output - pytorch_output).max().item()
+    scan_like_diff = torch.abs(scan_like_output - pytorch_output).max().item()
+    online_scan_diff = torch.abs(online_output - scan_like_output).max().item()
 
-    print(f"Max difference from PyTorch: {max_diff:.2e}")
-    print(f"Cosine similarity: {cos_sim:.6f}")
-    print("✓ Causal masking works correctly!" if max_diff < 1e-5 else "✗ Causal masking issue!")
+    online_cos_sim = F.cosine_similarity(online_output.flatten().unsqueeze(0),
+                                       pytorch_output.flatten().unsqueeze(0)).item()
+    scan_cos_sim = F.cosine_similarity(scan_like_output.flatten().unsqueeze(0),
+                                     pytorch_output.flatten().unsqueeze(0)).item()
+
+    print(f"Online vs PyTorch - Max diff: {online_diff:.2e}, Cosine sim: {online_cos_sim:.6f}")
+    print(f"Scan-like vs PyTorch - Max diff: {scan_like_diff:.2e}, Cosine sim: {scan_cos_sim:.6f}")
+    print(f"Online vs Scan-like - Max diff: {online_scan_diff:.2e}")
+
+    all_good = all(diff < 1e-5 for diff in [online_diff, scan_like_diff])
+    print("✓ All causal implementations work correctly!" if all_good else "✗ Causal masking issues!")
 
 
 def main():
     """Main demo function."""
-    print("🧠 NAIVE ATTENTION WITH ONLINE SOFTMAX - EDUCATIONAL DEMO")
+    print("🧠 NAIVE ATTENTION WITH ONLINE SOFTMAX IMPLEMENTATIONS - EDUCATIONAL DEMO")
     print("Understanding attention computation from first principles")
+    print("Comparing Standard, Online, and Scan-like approaches")
     print(f"PyTorch version: {torch.__version__}")
     print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
 
@@ -432,14 +471,19 @@ def main():
         print_section_header("DEMO COMPLETED SUCCESSFULLY! 🎉")
         print("Key Takeaways:")
         print("1. Online softmax produces identical results to standard softmax")
-        print("2. Online softmax provides better numerical stability")
-        print("3. The algorithm processes attention incrementally (key by key)")
-        print("4. This foundation enables memory-efficient attention (FlashAttention)")
-        print("5. Both causal and non-causal attention work correctly")
+        print("2. Scan-like softmax optimizes online softmax while maintaining correctness")
+        print("3. Online softmax provides better numerical stability")
+        print("4. The algorithm processes attention incrementally (key by key)")
+        print("5. Scan-like approach reduces computational overhead compared to naive online")
+        print("6. This foundation enables memory-efficient attention (FlashAttention)")
+        print("7. Both causal and non-causal attention work correctly for all methods")
+        print("\nPerformance hierarchy (fastest to slowest):")
+        print("  PyTorch SDPA > Standard Softmax > Scan-like Softmax > Online Softmax")
         print("\nNext steps:")
         print("- Study FlashAttention paper for block-wise processing")
         print("- Explore tiled/blocked attention implementations")
         print("- Learn about memory optimization techniques")
+        print("- Investigate further optimizations for scan-like approaches")
 
     except Exception as e:
         print(f"\n❌ Demo failed with error: {e}")

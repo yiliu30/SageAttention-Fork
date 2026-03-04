@@ -27,6 +27,7 @@ from naive_attention import (
     naive_attention,
     naive_attention_standard,
     naive_attention_online_softmax,
+    naive_attention_scan_like,
     compare_attention_methods
 )
 
@@ -108,8 +109,15 @@ class TestNaiveAttention(unittest.TestCase):
         online_output = naive_attention_online_softmax(q, k, v, is_causal=False)
         self.assert_tensors_close(pytorch_output, online_output, "PyTorch", "Online")
 
+        # Test scan-like online softmax version
+        scan_like_output = naive_attention_scan_like(q, k, v, is_causal=False)
+        self.assert_tensors_close(pytorch_output, scan_like_output, "PyTorch", "Scan-like")
+
         # Test that standard and online produce identical results
         self.assert_tensors_close(standard_output, online_output, "Standard", "Online")
+
+        # Test that online and scan-like produce identical results
+        self.assert_tensors_close(online_output, scan_like_output, "Online", "Scan-like")
 
     def test_correctness_causal(self):
         """Test correctness against PyTorch SDPA for causal attention."""
@@ -126,8 +134,15 @@ class TestNaiveAttention(unittest.TestCase):
         online_output = naive_attention_online_softmax(q, k, v, is_causal=True)
         self.assert_tensors_close(pytorch_output, online_output, "PyTorch", "Online (causal)")
 
+        # Test scan-like online softmax version
+        scan_like_output = naive_attention_scan_like(q, k, v, is_causal=True)
+        self.assert_tensors_close(pytorch_output, scan_like_output, "PyTorch", "Scan-like (causal)")
+
         # Test that standard and online produce identical results
         self.assert_tensors_close(standard_output, online_output, "Standard (causal)", "Online (causal)")
+
+        # Test that online and scan-like produce identical results
+        self.assert_tensors_close(online_output, scan_like_output, "Online (causal)", "Scan-like (causal)")
 
     def test_output_shapes(self):
         """Test that output shapes match input query shapes."""
@@ -153,6 +168,10 @@ class TestNaiveAttention(unittest.TestCase):
                 online_output = naive_attention_online_softmax(q, k, v)
                 self.assertEqual(online_output.shape, expected_shape)
 
+                # Test scan-like version
+                scan_like_output = naive_attention_scan_like(q, k, v)
+                self.assertEqual(scan_like_output.shape, expected_shape)
+
     def test_different_sequence_lengths(self):
         """Test attention with different query and key sequence lengths."""
         seq_len_q = 32
@@ -166,16 +185,19 @@ class TestNaiveAttention(unittest.TestCase):
         # Our implementations
         standard_output = naive_attention_standard(q, k, v, is_causal=False)
         online_output = naive_attention_online_softmax(q, k, v, is_causal=False)
+        scan_like_output = naive_attention_scan_like(q, k, v, is_causal=False)
 
         # Check shapes
         expected_shape = (self.batch_size, self.num_heads, seq_len_q, self.head_dim)
         self.assertEqual(pytorch_output.shape, expected_shape)
         self.assertEqual(standard_output.shape, expected_shape)
         self.assertEqual(online_output.shape, expected_shape)
+        self.assertEqual(scan_like_output.shape, expected_shape)
 
         # Check correctness
         self.assert_tensors_close(pytorch_output, standard_output, "PyTorch", "Standard (diff seq)")
         self.assert_tensors_close(pytorch_output, online_output, "PyTorch", "Online (diff seq)")
+        self.assert_tensors_close(pytorch_output, scan_like_output, "PyTorch", "Scan-like (diff seq)")
 
     def test_custom_scale_factor(self):
         """Test attention with custom scale factors."""
@@ -191,12 +213,15 @@ class TestNaiveAttention(unittest.TestCase):
                 # Our implementations
                 standard_output = naive_attention_standard(q, k, v, sm_scale=scale)
                 online_output = naive_attention_online_softmax(q, k, v, sm_scale=scale)
+                scan_like_output = naive_attention_scan_like(q, k, v, sm_scale=scale)
 
                 # Check correctness
                 self.assert_tensors_close(pytorch_output, standard_output,
                                         f"PyTorch (scale={scale})", f"Standard (scale={scale})")
                 self.assert_tensors_close(pytorch_output, online_output,
                                         f"PyTorch (scale={scale})", f"Online (scale={scale})")
+                self.assert_tensors_close(pytorch_output, scan_like_output,
+                                        f"PyTorch (scale={scale})", f"Scan-like (scale={scale})")
 
     def test_numerical_stability(self):
         """Test numerical stability with extreme values."""
@@ -208,15 +233,19 @@ class TestNaiveAttention(unittest.TestCase):
         # Should still produce valid results without NaN or Inf
         standard_output = naive_attention_standard(q, k, v)
         online_output = naive_attention_online_softmax(q, k, v)
+        scan_like_output = naive_attention_scan_like(q, k, v)
 
         # Check for NaN or Inf values
         self.assertFalse(torch.isnan(standard_output).any(), "Standard output contains NaN")
         self.assertFalse(torch.isinf(standard_output).any(), "Standard output contains Inf")
         self.assertFalse(torch.isnan(online_output).any(), "Online output contains NaN")
         self.assertFalse(torch.isinf(online_output).any(), "Online output contains Inf")
+        self.assertFalse(torch.isnan(scan_like_output).any(), "Scan-like output contains NaN")
+        self.assertFalse(torch.isinf(scan_like_output).any(), "Scan-like output contains Inf")
 
-        # Online softmax should be more numerically stable
+        # Online and scan-like softmax should be more numerically stable
         self.assert_tensors_close(standard_output, online_output, "Standard (large values)", "Online (large values)")
+        self.assert_tensors_close(online_output, scan_like_output, "Online (large values)", "Scan-like (large values)")
 
     def test_edge_case_single_sequence(self):
         """Test with sequence length of 1."""
@@ -225,9 +254,11 @@ class TestNaiveAttention(unittest.TestCase):
         pytorch_output = F.scaled_dot_product_attention(q, k, v)
         standard_output = naive_attention_standard(q, k, v)
         online_output = naive_attention_online_softmax(q, k, v)
+        scan_like_output = naive_attention_scan_like(q, k, v)
 
         self.assert_tensors_close(pytorch_output, standard_output, "PyTorch (seq=1)", "Standard (seq=1)")
         self.assert_tensors_close(pytorch_output, online_output, "PyTorch (seq=1)", "Online (seq=1)")
+        self.assert_tensors_close(pytorch_output, scan_like_output, "PyTorch (seq=1)", "Scan-like (seq=1)")
 
     def test_edge_case_single_head(self):
         """Test with single attention head."""
@@ -236,9 +267,11 @@ class TestNaiveAttention(unittest.TestCase):
         pytorch_output = F.scaled_dot_product_attention(q, k, v)
         standard_output = naive_attention_standard(q, k, v)
         online_output = naive_attention_online_softmax(q, k, v)
+        scan_like_output = naive_attention_scan_like(q, k, v)
 
         self.assert_tensors_close(pytorch_output, standard_output, "PyTorch (1 head)", "Standard (1 head)")
         self.assert_tensors_close(pytorch_output, online_output, "PyTorch (1 head)", "Online (1 head)")
+        self.assert_tensors_close(pytorch_output, scan_like_output, "PyTorch (1 head)", "Scan-like (1 head)")
 
     def test_main_interface(self):
         """Test the main naive_attention interface function."""
@@ -254,36 +287,139 @@ class TestNaiveAttention(unittest.TestCase):
         expected_online = naive_attention_online_softmax(q, k, v)
         self.assertTrue(torch.allclose(output_online, expected_online))
 
+        # Test with use_scan_like=True (should override use_online_softmax)
+        output_scan_like = naive_attention(q, k, v, use_scan_like=True)
+        expected_scan_like = naive_attention_scan_like(q, k, v)
+        self.assertTrue(torch.allclose(output_scan_like, expected_scan_like))
+
+        # Test that use_scan_like=True overrides use_online_softmax=False
+        output_scan_override = naive_attention(q, k, v, use_online_softmax=False, use_scan_like=True)
+        self.assertTrue(torch.allclose(output_scan_override, expected_scan_like))
+
     def test_compare_methods_function(self):
         """Test the compare_attention_methods utility function."""
         q, k, v = self.create_test_tensors()
 
-        pytorch_out, standard_out, online_out, metrics = compare_attention_methods(q, k, v)
+        pytorch_out, standard_out, online_out, scan_like_out, metrics = compare_attention_methods(q, k, v)
 
         # Check that outputs are returned
         self.assertEqual(pytorch_out.shape, (self.batch_size, self.num_heads, self.seq_len, self.head_dim))
         self.assertEqual(standard_out.shape, (self.batch_size, self.num_heads, self.seq_len, self.head_dim))
         self.assertEqual(online_out.shape, (self.batch_size, self.num_heads, self.seq_len, self.head_dim))
+        self.assertEqual(scan_like_out.shape, (self.batch_size, self.num_heads, self.seq_len, self.head_dim))
 
         # Check that metrics are computed
         expected_metric_keys = [
             'cosine_sim_pytorch_vs_standard',
             'cosine_sim_pytorch_vs_online',
+            'cosine_sim_pytorch_vs_scan_like',
             'cosine_sim_standard_vs_online',
+            'cosine_sim_standard_vs_scan_like',
+            'cosine_sim_online_vs_scan_like',
             'max_abs_diff_pytorch_vs_standard',
             'max_abs_diff_pytorch_vs_online',
+            'max_abs_diff_pytorch_vs_scan_like',
             'max_abs_diff_standard_vs_online',
+            'max_abs_diff_standard_vs_scan_like',
+            'max_abs_diff_online_vs_scan_like',
             'mean_abs_diff_pytorch_vs_standard',
             'mean_abs_diff_pytorch_vs_online',
+            'mean_abs_diff_pytorch_vs_scan_like',
             'mean_abs_diff_standard_vs_online',
+            'mean_abs_diff_standard_vs_scan_like',
+            'mean_abs_diff_online_vs_scan_like',
             'rel_error_pytorch_vs_standard',
             'rel_error_pytorch_vs_online',
-            'rel_error_standard_vs_online'
+            'rel_error_pytorch_vs_scan_like',
+            'rel_error_standard_vs_online',
+            'rel_error_standard_vs_scan_like',
+            'rel_error_online_vs_scan_like'
         ]
 
         for key in expected_metric_keys:
             self.assertIn(key, metrics, f"Missing metric: {key}")
             self.assertIsInstance(metrics[key], float, f"Metric {key} should be float")
+
+        # Specific test: online and scan-like should be identical
+        self.assertAlmostEqual(metrics['cosine_sim_online_vs_scan_like'], 1.0, places=6)
+        self.assertLess(metrics['max_abs_diff_online_vs_scan_like'], 1e-10)
+
+    def test_scan_like_correctness(self):
+        """Test scan-like implementation correctness in detail."""
+        q, k, v = self.create_test_tensors()
+
+        # Test both causal and non-causal
+        for is_causal in [False, True]:
+            with self.subTest(causal=is_causal):
+                # Compare with online implementation (should be identical)
+                online_output = naive_attention_online_softmax(q, k, v, is_causal=is_causal)
+                scan_like_output = naive_attention_scan_like(q, k, v, is_causal=is_causal)
+
+                # Should be exactly identical
+                self.assertTrue(torch.allclose(online_output, scan_like_output, rtol=1e-10, atol=1e-10),
+                              f"Scan-like and online outputs should be identical for causal={is_causal}")
+
+    def test_scan_like_shapes(self):
+        """Test scan-like implementation with various tensor shapes."""
+        test_configs = [
+            (1, 1, 4, 32),      # Minimal case
+            (2, 4, 16, 64),     # Standard case
+            (1, 8, 64, 96),     # Longer sequence
+            (3, 6, 32, 48),     # Non-standard dimensions
+        ]
+
+        for batch_size, num_heads, seq_len, head_dim in test_configs:
+            with self.subTest(batch=batch_size, heads=num_heads, seq=seq_len, dim=head_dim):
+                q, k, v = self.create_test_tensors(batch_size, num_heads, seq_len, seq_len, head_dim)
+
+                output = naive_attention_scan_like(q, k, v)
+                expected_shape = (batch_size, num_heads, seq_len, head_dim)
+                self.assertEqual(output.shape, expected_shape)
+
+                # Should not contain NaN or Inf
+                self.assertFalse(torch.isnan(output).any())
+                self.assertFalse(torch.isinf(output).any())
+
+    def test_scan_like_gradients(self):
+        """Test that gradients flow correctly through scan-like implementation."""
+        q, k, v = self.create_test_tensors()
+        q.requires_grad_(True)
+        k.requires_grad_(True)
+        v.requires_grad_(True)
+
+        # Forward and backward pass
+        output = naive_attention_scan_like(q, k, v)
+        loss = output.sum()
+        loss.backward()
+
+        # Check gradients exist and are finite
+        self.assertIsNotNone(q.grad, "Query gradients should not be None")
+        self.assertIsNotNone(k.grad, "Key gradients should not be None")
+        self.assertIsNotNone(v.grad, "Value gradients should not be None")
+
+        self.assertTrue(torch.isfinite(q.grad).all(), "Query gradients should be finite")
+        self.assertTrue(torch.isfinite(k.grad).all(), "Key gradients should be finite")
+        self.assertTrue(torch.isfinite(v.grad).all(), "Value gradients should be finite")
+
+        # Compare gradients with online softmax
+        q2, k2, v2 = self.create_test_tensors()
+        q2.requires_grad_(True)
+        k2.requires_grad_(True)
+        v2.requires_grad_(True)
+
+        # Make sure we use the same data
+        q2.data.copy_(q.data)
+        k2.data.copy_(k.data)
+        v2.data.copy_(v.data)
+
+        output2 = naive_attention_online_softmax(q2, k2, v2)
+        loss2 = output2.sum()
+        loss2.backward()
+
+        # Gradients should be close between scan-like and online
+        self.assertTrue(torch.allclose(q.grad, q2.grad, rtol=1e-5, atol=1e-6))
+        self.assertTrue(torch.allclose(k.grad, k2.grad, rtol=1e-5, atol=1e-6))
+        self.assertTrue(torch.allclose(v.grad, v2.grad, rtol=1e-5, atol=1e-6))
 
     def test_gradient_flow(self):
         """Test that gradients flow correctly through both implementations."""
@@ -340,7 +476,8 @@ def run_performance_comparison():
     methods = {
         'PyTorch SDPA': lambda: F.scaled_dot_product_attention(q, k, v),
         'Standard Softmax': lambda: naive_attention_standard(q, k, v),
-        'Online Softmax': lambda: naive_attention_online_softmax(q, k, v)
+        'Online Softmax': lambda: naive_attention_online_softmax(q, k, v),
+        'Scan-like Softmax': lambda: naive_attention_scan_like(q, k, v)
     }
 
     results = {}
