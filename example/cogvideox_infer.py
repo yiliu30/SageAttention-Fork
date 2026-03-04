@@ -161,7 +161,9 @@ if __name__ == "__main__":
     prompt_path_prefix = "smoke"
     # extract prefix from prompt_path
     prompt_path_prefix = os.path.basename(prompt_path).split(".")[0]
-    video_dir = f"videos/{args.model}/{prompt_path_prefix}/{args.attention_type}"
+    # add timestamp for video_dir
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    video_dir = f"videos/{args.model}/{prompt_path_prefix}/{args.attention_type}/{timestamp}"
     os.makedirs(video_dir, exist_ok=True)
 
     with open(prompt_path, "r", encoding="utf-8") as file:
