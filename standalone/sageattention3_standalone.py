@@ -49,11 +49,6 @@ import warnings
 import time
 from typing import Optional, Tuple, Union
 
-# Save a reference to PyTorch's original SDPA before any monkey-patching.
-# This is used in fallback paths to avoid infinite recursion when
-# F.scaled_dot_product_attention has been replaced with our function.
-_original_torch_sdpa = torch.nn.functional.scaled_dot_product_attention
-
 # Embedded constants from sageattn3_torch.py (exact copy)
 FP4_MAX = 6.0
 FP8_MAX = 448.0
@@ -1058,17 +1053,11 @@ def scaled_dot_product_attention(
     try:
         import triton
     except ImportError:
-        warnings.warn("Triton not available, falling back to PyTorch SDPA", UserWarning)
-        return _original_torch_sdpa(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
-        )
+        raise ImportError("Triton is required for SageAttention3 standalone")
 
     # Check device compatibility
     if not query.is_cuda:
-        debug_print("SageAttention3 requires CUDA tensors, falling back to PyTorch SDPA")
-        return _original_torch_sdpa(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
-        )
+        raise RuntimeError("SageAttention3 requires CUDA tensors")
 
     # Warn about unsupported features (only if debug mode)
     if dropout_p > 0.0 and SAGE3_DEBUG:
@@ -1110,17 +1099,15 @@ def scaled_dot_product_attention(
 
         # Check for NaN/Inf in output
         if torch.isnan(output).any() or torch.isinf(output).any():
-            warnings.warn("SageAttention3 produced NaN/Inf outputs, falling back to PyTorch SDPA",
-                         UserWarning)
-            return _original_torch_sdpa(
-                query, key, value, attn_mask, dropout_p, is_causal, scale
-            )
+            raise RuntimeError("SageAttention3 produced NaN/Inf outputs")
 
         return output
 
     except Exception as e:
-        debug_print(f"SageAttention3 failed with error: {e}")
-        debug_print("Falling back to PyTorch SDPA")
-        return _original_torch_sdpa(
-            query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
-        )
+        raise RuntimeError(f"SageAttention3 failed: {e}") from e
+
+# ============================================================================
+# Re-export built-in tests so existing imports keep working
+# (e.g. `from sageattention3_standalone import run_all_tests`)
+# ============================================================================
+from builtin_tests import run_all_tests, validate_inputs, print_environment_info
