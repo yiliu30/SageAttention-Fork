@@ -154,16 +154,15 @@ def round_to_e4m3_torch(scales):
 @triton.jit
 def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     """
-    Corrected two-level P quantization with TRUE 16-element block microscaling.
+    Two-level P quantization with per-row, per-block microscaling.
 
-    For fixed 128x128 tiles, computes microscales based on the actual maximum
-    value within each 16-element block (across all rows in that block).
+    For fixed 128x128 tiles:
+    - Level 1: Per-row global scale (row_max / COMBINED_MAX)
+    - Level 2: Per-row, per-16-col-block microscale (block_max_per_row / FP4_MAX)
 
-    Key features:
-    - Each 16-element block gets microscale = max(abs(block_elements)) / 6.0
-    - No loops - uses vectorized operations for 8 blocks (128/16=8)
-    - E4M3 rounding applied to block-based microscales
-    - All elements in same 16-element block use identical microscales
+    Each row independently computes its own set of 8 block microscales,
+    matching the CUDA reference kernel (softmax_fused.h) where AbsMaxP has
+    shape (rows, n_blocks).
 
     Args:
         p_tile: [128, 128] attention probabilities (fixed size)
@@ -183,57 +182,58 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     global_scales = tl.maximum(row_max / COMBINED_MAX, 1e-8)
     p_level1 = p_tile / global_scales[:, None]
 
-    # Level 2: TRUE 16-element block microscaling
+    # Level 2: Per-row, per-16-col-block microscaling
     # For 128 columns, we have exactly 8 blocks of 16 elements each
     # Block 0: cols 0-15, Block 1: cols 16-31, ..., Block 7: cols 112-127
 
     col_indices = tl.arange(0, BLOCK_N)
     block_ids = col_indices // MICROSCALE_BLOCK_SIZE
 
-    # Vectorized computation of block maximums (no loops!)
-    # For each block, find the maximum across all elements in that block
+    # Compute per-row max for each 16-column block
+    # Each block_X_max has shape [128] (one max per row)
 
-    # Block 0 (columns 0-15): Extract and find maximum
+    # Block 0 (columns 0-15): Per-row max
     block_0_mask = (col_indices >= 0) & (col_indices < 16)
     p_block_0 = tl.where(block_0_mask[None, :], tl.abs(p_level1), 0.0)
-    block_0_max = tl.max(p_block_0)  # Maximum across entire block (all rows, cols 0-15)
+    block_0_max = tl.max(p_block_0, axis=1)  # [128] per-row max
 
     # Block 1 (columns 16-31)
     block_1_mask = (col_indices >= 16) & (col_indices < 32)
     p_block_1 = tl.where(block_1_mask[None, :], tl.abs(p_level1), 0.0)
-    block_1_max = tl.max(p_block_1)
+    block_1_max = tl.max(p_block_1, axis=1)  # [128] per-row max
 
     # Block 2 (columns 32-47)
     block_2_mask = (col_indices >= 32) & (col_indices < 48)
     p_block_2 = tl.where(block_2_mask[None, :], tl.abs(p_level1), 0.0)
-    block_2_max = tl.max(p_block_2)
+    block_2_max = tl.max(p_block_2, axis=1)  # [128] per-row max
 
     # Block 3 (columns 48-63)
     block_3_mask = (col_indices >= 48) & (col_indices < 64)
     p_block_3 = tl.where(block_3_mask[None, :], tl.abs(p_level1), 0.0)
-    block_3_max = tl.max(p_block_3)
+    block_3_max = tl.max(p_block_3, axis=1)  # [128] per-row max
 
     # Block 4 (columns 64-79)
     block_4_mask = (col_indices >= 64) & (col_indices < 80)
     p_block_4 = tl.where(block_4_mask[None, :], tl.abs(p_level1), 0.0)
-    block_4_max = tl.max(p_block_4)
+    block_4_max = tl.max(p_block_4, axis=1)  # [128] per-row max
 
     # Block 5 (columns 80-95)
     block_5_mask = (col_indices >= 80) & (col_indices < 96)
     p_block_5 = tl.where(block_5_mask[None, :], tl.abs(p_level1), 0.0)
-    block_5_max = tl.max(p_block_5)
+    block_5_max = tl.max(p_block_5, axis=1)  # [128] per-row max
 
     # Block 6 (columns 96-111)
     block_6_mask = (col_indices >= 96) & (col_indices < 112)
     p_block_6 = tl.where(block_6_mask[None, :], tl.abs(p_level1), 0.0)
-    block_6_max = tl.max(p_block_6)
+    block_6_max = tl.max(p_block_6, axis=1)  # [128] per-row max
 
     # Block 7 (columns 112-127)
     block_7_mask = (col_indices >= 112) & (col_indices < 128)
     p_block_7 = tl.where(block_7_mask[None, :], tl.abs(p_level1), 0.0)
-    block_7_max = tl.max(p_block_7)
+    block_7_max = tl.max(p_block_7, axis=1)  # [128] per-row max
 
-    # Compute microscales for each block: block_max / 6.0
+    # Compute per-row microscales for each block: block_max_per_row / FP4_MAX
+    # Each has shape [128]
     block_0_microscale = tl.maximum(block_0_max / FP4_MAX, 1e-8)
     block_1_microscale = tl.maximum(block_1_max / FP4_MAX, 1e-8)
     block_2_microscale = tl.maximum(block_2_max / FP4_MAX, 1e-8)
@@ -243,7 +243,8 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     block_6_microscale = tl.maximum(block_6_max / FP4_MAX, 1e-8)
     block_7_microscale = tl.maximum(block_7_max / FP4_MAX, 1e-8)
 
-    # Apply E4M3 rounding to each block's microscale
+    # Apply E4M3 rounding to each block's per-row microscale
+    # Each has shape [128]
     block_0_microscale_e4m3 = round_to_e4m3_triton(block_0_microscale)
     block_1_microscale_e4m3 = round_to_e4m3_triton(block_1_microscale)
     block_2_microscale_e4m3 = round_to_e4m3_triton(block_2_microscale)
@@ -253,27 +254,28 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     block_6_microscale_e4m3 = round_to_e4m3_triton(block_6_microscale)
     block_7_microscale_e4m3 = round_to_e4m3_triton(block_7_microscale)
 
-    # Create the final microscale tensor: each column gets its block's microscale
+    # Build [128, 128] microscale tensor: each row has its own block scales
+    # block_X_microscale_e4m3 is [128] (per-row), broadcast to [128, 1]
+    # block_ids is [128] (per-col), broadcast via tl.where to [128, 128]
     microscale_final = (
-        tl.where(block_ids == 0, block_0_microscale_e4m3,
-        tl.where(block_ids == 1, block_1_microscale_e4m3,
-        tl.where(block_ids == 2, block_2_microscale_e4m3,
-        tl.where(block_ids == 3, block_3_microscale_e4m3,
-        tl.where(block_ids == 4, block_4_microscale_e4m3,
-        tl.where(block_ids == 5, block_5_microscale_e4m3,
-        tl.where(block_ids == 6, block_6_microscale_e4m3,
-                                 block_7_microscale_e4m3)))))))
+        tl.where(block_ids[None, :] == 0, block_0_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 1, block_1_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 2, block_2_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 3, block_3_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 4, block_4_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 5, block_5_microscale_e4m3[:, None],
+        tl.where(block_ids[None, :] == 6, block_6_microscale_e4m3[:, None],
+                                           block_7_microscale_e4m3[:, None])))))))
     )
 
-    # Broadcast to tensor dimensions [128, 128]
-    microscale_broadcasted = microscale_final[None, :]  # [1, 128] -> [128, 128]
+    # microscale_final is already [128, 128] — no broadcast needed
 
     # Apply microscaling and quantization
-    p_microscaled = p_level1 / microscale_broadcasted
+    p_microscaled = p_level1 / microscale_final
     p_quantized = apply_e2m1_quantization_triton(p_microscaled)
 
     # Reconstruct with both scale levels
-    p_final = (p_quantized * microscale_broadcasted * global_scales[:, None])
+    p_final = (p_quantized * microscale_final * global_scales[:, None])
 
     return p_final
 
