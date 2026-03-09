@@ -105,37 +105,6 @@ def apply_nvfp4_e2m1_quantization_triton(x):
 
     return quantized_abs * sign
 
-@triton.jit
-def nvfp4_quantize_triton(x_block, block_size: tl.constexpr):
-    """
-    NVFP4 quantization with proper global scaling for a block.
-
-    Args:
-        x_block: [block_size] values to quantize
-        block_size: Size of the block (constexpr)
-
-    Returns:
-        x_quantized: [block_size] quantized values
-        scale: scalar scale factor for this block
-    """
-    # Compute block maximum for global scaling
-    block_max = tl.max(tl.abs(x_block))
-
-    # Apply global range normalization: vecMax / 6.0
-    FP4_MAX = 6.0
-    scale = block_max / FP4_MAX
-    scale = tl.maximum(scale, 1e-8)  # Prevent division by zero
-
-    # Normalize to FP4 range
-    x_normalized = x_block / scale
-
-    # Apply NVFP4 E2M1 quantization
-    x_quantized = apply_nvfp4_e2m1_quantization_triton(x_normalized)
-
-    # Reconstruct with scale
-    x_quantized = x_quantized * scale
-
-    return x_quantized, scale
 
 @triton.jit
 def round_to_e4m3_triton(scale):
@@ -143,7 +112,7 @@ def round_to_e4m3_triton(scale):
     Round scale to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
 
     This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
-        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);
+        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);q
         SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
     """
     scale_type = scale.dtype
@@ -603,43 +572,53 @@ def apply_qk_smoothing_standalone(q: torch.Tensor, k: torch.Tensor) -> Tuple[tor
     return q_smoothed, k_smoothed, delta_s
 
 
+def round_to_e4m3_torch(scales):
+    """
+    Round scales to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
+
+    This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
+        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);q
+        SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
+    """
+    return scales.to(torch.float8_e4m3fn).to(scales.dtype)
+
 def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    NVFP4 E2M1 quantization with proper global scaling (based on real SageAttention3 kernel).
+    NVFP4 E2M1 per-block microscaling quantization (matching real SageAttention3 kernel).
 
-    🔥 CRITICAL REAL KERNEL ALIGNMENT:
-    ===================================
-    This function implements the EXACT scaling from the actual SageAttention3 Blackwell kernel:
+    This function implements the EXACT per-block scaling from the actual SageAttention3
+    Blackwell kernel (`sageattn3/quantization/fp4_quantization_4d.cu`).
 
-    From `/sageattn3/quantization/fp4_quantization_4d.cu`:
+    There is NO tensor-level global scale. Scaling is strictly per-block: each block of
+    16 elements gets its own FP8 E4M3 scale factor computed from the block's local max.
+
+    From the real CUDA kernel:
     ```cuda
-    float vecMax = float(__hmax(localMax.x, localMax.y));
-    float SFValue = vecMax / 6.0f;  // ✅ CORRECT global range normalization!
+    float vecMax = float(__hmax(localMax.x, localMax.y));  // per-block max
+    float SFValue = vecMax / 6.0f;  // per-block scale (6.0 = FP4 E2M1 max)
+    SFValueFP8 = __nv_fp8_e4m3(SFValue);  // round scale to FP8 E4M3
     ```
 
-    Key improvements over previous "conservative" scaling:
-    - ❌ OLD: scales = torch.clamp(scales / 16.0, ...)  # Arbitrary, under-utilizes NVFP4 range
-    - ✅ NEW: scales = block_max / 6.0                  # Maps to FP4 E2M1 max representable
+    The divisor 6.0 is a constant (the max representable FP4 E2M1 value), not a
+    tensor-level statistic. Dividing by 6.0 maps each block into the [-6, 6] range
+    so the hardware `cvt.rn.satfinite.e2m1x2` instruction can quantize optimally.
 
-    This change improves accuracy from ~60% to >95% cosine similarity!
-
-    Mathematical Operation:
-    ======================
-    1. Reshape tensor into K-dimension aligned blocks of size 16
-    2. Compute per-block maximum value (block_max)
-    3. Apply global range normalization: scale = block_max / 6.0
-    4. Normalize each block: normalized = block / scale
-    5. Apply NVFP4 E2M1 quantization to normalized values
-    6. Reconstruct with scales: quantized = quantized_normalized * scale
+    Steps:
+        1. Reshape tensor into blocks of 16 along the D (head_dim) dimension
+        2. Compute per-block max: block_max = max(|block|)
+        3. Compute per-block scale: scale = block_max / 6.0, rounded to FP8 E4M3
+        4. Normalize each block: normalized = block / scale
+        5. Quantize to nearest FP4 E2M1 level
+        6. Reconstruct: quantized = quantized_normalized * scale
 
     Args:
-        x (torch.Tensor): Input tensor [B, H, N, D] where D is the K-dimension
-        block_size (int): Microscaling block size along K-dimension (default: 16)
+        x (torch.Tensor): Input tensor [B, H, N, D] where D is the head dimension
+        block_size (int): Microscaling block size along D dimension (default: 16)
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]:
             - x_quantized: Quantized tensor [B, H, N, D] - same shape as input
-            - scales: FP8 scale factors [B, H, N, D//block_size] - per-block scales
+            - scales: FP8 E4M3 per-block scale factors [B, H, N, D//block_size]
     """
     import torch.nn.functional as F
 
@@ -659,17 +638,18 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
     num_blocks = D_padded // block_size
     x_blocks = x_padded.view(B, H, N, num_blocks, block_size)
 
-    # CRITICAL: Apply proper global range normalization (from real kernel)
-    # Real kernel: float SFValue = vecMax / 6.0f;
-    # This normalizes to NVFP4 E2M1 representable range [0, 6]
-    FP4_MAX = 6.0  # FP4 E2M1 maximum representable value
+    # Per-block scaling (matching real kernel: SFValue = vecMax / 6.0f)
+    # 6.0 is the max representable FP4 E2M1 value (constant, not a global statistic)
+    FP4_MAX = 6.0
 
-    # Compute per-block max and apply global range normalization
+    # Compute per-block max and per-block scale
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, N, num_blocks]
-    scales = block_max / FP4_MAX  # Global range normalization!
+    scales = block_max / FP4_MAX  # per-block scale factor
 
     # Prevent division by zero
     scales = torch.clamp(scales, min=1e-8)
+    # round scales to FP8 E4M3 precision (matching real kernel)
+    scales = round_to_e4m3_torch(scales)
 
     # Normalize to FP4 range
     x_normalized = x_blocks / scales.unsqueeze(-1)  # [B, H, N, num_blocks, block_size]
@@ -706,43 +686,20 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
     else:
         x_quantized = x_quantized_full
 
-    # Convert scales to FP8 E4M3 (simplified version)
-    quantization_levels = 256.0  # Approximate FP8 precision
-    scales_fp8 = torch.floor(scales * quantization_levels + 0.5) / quantization_levels
-
-    return x_quantized, scales_fp8
+    return x_quantized, scales
 
 
 def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
     """
-    NVFP4 quantization with proper global scaling (aligned with real SageAttention3 kernel).
+    NVFP4 per-block microscaling quantization for Q, K, V tensors.
 
-    This is the main quantization function for Q, K, V tensors in the educational
-    implementation, applying the exact same quantization strategy as the real
-    SageAttention3 Blackwell hardware.
+    Wrapper around nvfp4_quantize_standalone() that returns only the quantized
+    tensor (discarding the scale factors). Uses the same per-block scaling
+    strategy as the real SageAttention3 Blackwell kernel:
 
-    Key Real Kernel Alignment Features:
-    ===================================
-    ✅ Global Range Normalization: vecMax / 6.0 (matching fp4_quantization_4d.cu)
-    ✅ 16-Element Microscaling: Blocks aligned along K-dimension
-    ✅ FP8 E4M3 Scale Factors: As in actual hardware implementation
-    ✅ True NVFP4 E2M1 Quantization: Real representable values
-    ✅ Hardware Memory Layout: Matches production kernel patterns
-
-    Mathematical Operation:
-    ======================
-    From real kernel (fp4_quantization_4d.cu):
-    ```cuda
-    float SFValue = vecMax / 6.0f;  // Global range normalization!
-    ```
-
-    This function wraps the complete NVFP4 quantization process:
-    1. Reshape input into K-dimension aligned blocks of 16 elements
-    2. Compute per-block maximum values
-    3. Apply global range normalization (vecMax / 6.0)
-    4. Normalize blocks to FP4 representable range [-6, 6]
-    5. Apply NVFP4 E2M1 quantization
-    6. Reconstruct with FP8 E4M3 scale factors
+    - 16-element blocks along the D (head_dim) dimension
+    - Per-block scale = block_max / 6.0, rounded to FP8 E4M3
+    - NVFP4 E2M1 quantization within each block
 
     Args:
         x (torch.Tensor): Input tensor [B, H, N, D] (Q, K, or V)
@@ -750,11 +707,9 @@ def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
     Returns:
         torch.Tensor: Quantized tensor [B, H, N, D] with NVFP4 E2M1 values
     """
-    # Apply NVFP4 quantization with real kernel's global scaling
     x_quantized, scales = nvfp4_quantize_standalone(x, block_size=16)
 
-    debug_print(f"Real kernel NVFP4 quantization: K-dim {x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
-    debug_print(f"Applied global range normalization: vecMax / 6.0")
+    debug_print(f"NVFP4 per-block quantization: D={x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
 
     return x_quantized
 
