@@ -140,22 +140,14 @@ def nvfp4_quantize_triton(x_block, block_size: tl.constexpr):
 @triton.jit
 def round_to_e4m3_triton(scale):
     """
-    Round scale to E4M3 precision using mathematical approximation.
+    Round scale to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
 
-    E4M3 format has 4 exponent bits and 3 mantissa bits.
-    This function approximates the rounding behavior of the real kernel's
-    E4M3 round-trip conversion.
-
-    The real kernel does:
-    float SFValue = vecMax / 6.0f;
-    uint8_t SFValueFP8;
-    reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);
-    SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8)); // Back to FP32
+    This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
+        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);
+        SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
     """
-    # Approximate E4M3 precision using quantization to limited precision
-    # E4M3 has 3 mantissa bits, so 2^3 = 8 discrete levels per power of 2
-    quantization_levels = 256.0  # Approximate FP8 precision
-    return tl.floor(scale * quantization_levels + 0.5) / quantization_levels
+    scale_type = scale.dtype
+    return scale.to(tl.float8e4nv).to(scale_type)
 
 @triton.jit
 def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
