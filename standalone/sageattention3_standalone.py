@@ -62,7 +62,7 @@ NVFP4_E2M1_VALUES = [-6, -4, -3, -2, -1.5, -1, -0.75, -0.5, 0, 0.5, 0.75, 1, 1.5
 # Environment variable configuration
 SAGE3_DEBUG = os.getenv('SAGE3_DEBUG', '0').lower() in ('1', 'true')
 SAGE3_DISABLE_PER_BLOCK_MEAN = os.getenv('SAGE3_DISABLE_PER_BLOCK_MEAN', '0').lower() in ('1', 'true')
-SAGE3_TILE_SIZE = int(os.getenv('SAGE3_TILE_SIZE', '128'))
+SAGE3_TILE_SIZE =  128
 SAGE3_BENCHMARK = os.getenv('SAGE3_BENCHMARK', '0').lower() in ('1', 'true')
 
 def debug_print(*args, **kwargs):
@@ -134,7 +134,7 @@ def round_to_e4m3_triton(scale):
     Round scale to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
 
     This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
-        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);q
+        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);
         SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
     """
     scale_type = scale.dtype
@@ -340,10 +340,9 @@ def tiled_online_attention_kernel(
               offs_m[:, None] * stride_q_n +
               offs_d[None, :] * stride_q_d)
 
-    q_mask = (offs_m[:, None] < N) & (offs_d[None, :] < HEAD_DIM)
+    q_mask = (offs_m[:, None] < N) & (offs_d[None, :] < D)
     q_tile = tl.load(q_ptrs, mask=q_mask, other=0.0)
 
-    # Quantize query tile (simple version for demonstration)
     q_tile = q_tile.to(tl.float32)
 
     # Initialize running statistics for online softmax
@@ -371,7 +370,7 @@ def tiled_online_attention_kernel(
                       offs_n[None, :] * stride_k_n +
                       offs_d[:, None] * stride_k_d)
 
-            k_mask = (offs_n[None, :] < N) & (offs_d[:, None] < HEAD_DIM)
+            k_mask = (offs_n[None, :] < N) & (offs_d[:, None] < D)
             k_tile = tl.load(k_ptrs, mask=k_mask, other=0.0).to(tl.float32)
 
             # Load value tile
@@ -381,7 +380,7 @@ def tiled_online_attention_kernel(
                       offs_n[:, None] * stride_v_n +
                       offs_d[None, :] * stride_v_d)
 
-            v_mask = (offs_n[:, None] < N) & (offs_d[None, :] < HEAD_DIM)
+            v_mask = (offs_n[:, None] < N) & (offs_d[None, :] < D)
             v_tile = tl.load(v_ptrs, mask=v_mask, other=0.0).to(tl.float32)
 
             # Compute QK^T (do NOT apply sm_scale yet — delta_s must be added first)
@@ -477,7 +476,7 @@ def tiled_online_attention_kernel(
                 offs_m[:, None] * stride_o_n +
                 offs_d[None, :] * stride_o_d)
 
-    out_mask = (offs_m[:, None] < N) & (offs_d[None, :] < HEAD_DIM)
+    out_mask = (offs_m[:, None] < N) & (offs_d[None, :] < D)
     tl.store(out_ptrs, output_tile.to(q_tile.dtype), mask=out_mask)
 
 # ============================================================================
