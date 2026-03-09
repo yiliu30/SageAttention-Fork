@@ -584,10 +584,15 @@ def round_to_e4m3_torch(scales):
 
 def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    NVFP4 E2M1 per-block microscaling quantization (matching real SageAttention3 kernel).
+    NVFP4 E2M1 per-block microscaling quantization for Q and K tensors.
 
     This function implements the EXACT per-block scaling from the actual SageAttention3
-    Blackwell kernel (`sageattn3/quantization/fp4_quantization_4d.cu`).
+    Blackwell kernel (`sageattn3/quantization/fp4_quantization_4d.cu`). Blocks are formed
+    along the D (head_dim) dimension, which matches the Q/K quantization path
+    (`scale_and_quant_fp4()` / `scale_and_quant_fp4_permute()`).
+
+    For V tensor quantization, use nvfp4_quantize_v_standalone() which blocks along
+    the N (seq_len) dimension to match `scale_and_quant_fp4_transpose()`.
 
     There is NO tensor-level global scale. Scaling is strictly per-block: each block of
     16 elements gets its own FP8 E4M3 scale factor computed from the block's local max.
@@ -689,9 +694,88 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
     return x_quantized, scales
 
 
+def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    NVFP4 E2M1 per-block microscaling quantization for V tensor.
+
+    Unlike Q/K which block along D (head_dim), V is quantized with blocks
+    along N (seq_len) to match the real kernel's `scaled_fp4_quant_trans_kernel`.
+
+    The real CUDA kernel transposes V from [N, D] to [D, N] in shared memory,
+    then applies per-block-of-16 microscaling along the N dimension. This means
+    each block of 16 contains consecutive tokens for a single feature channel.
+
+    Args:
+        x (torch.Tensor): Input V tensor [B, H, N, D]
+        block_size (int): Number of elements per microscaling block (default: 16)
+
+    Returns:
+        Tuple containing:
+            - x_quantized: Quantized tensor [B, H, N, D] - same shape as input
+            - scales: FP8 E4M3 per-block scale factors [B, H, D, N//block_size]
+    """
+    import torch.nn.functional as F
+
+    B, H, N, D = x.shape
+
+    # Pad N to multiple of block_size (unlike Q/K which pad D)
+    if N % block_size != 0:
+        pad_size = block_size - (N % block_size)
+        x_padded = F.pad(x, (0, 0, 0, pad_size), mode='constant', value=0)  # pad along N dim
+        N_padded = N + pad_size
+    else:
+        x_padded = x
+        N_padded = N
+
+    # Transpose to [B, H, D, N_padded] then reshape into blocks along N
+    x_transposed = x_padded.transpose(-2, -1).contiguous()  # [B, H, D, N_padded]
+    num_blocks = N_padded // block_size
+    x_blocks = x_transposed.view(B, H, D, num_blocks, block_size)
+
+    # Per-block scaling (same math as Q/K: SFValue = vecMax / 6.0f)
+    FP4_MAX = 6.0
+
+    block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, D, num_blocks]
+    scales = block_max / FP4_MAX
+    scales = torch.clamp(scales, min=1e-8)
+    scales = round_to_e4m3_torch(scales)
+
+    # Normalize to FP4 range
+    x_normalized = x_blocks / scales.unsqueeze(-1)  # [B, H, D, num_blocks, block_size]
+
+    # Apply NVFP4 E2M1 quantization (same logic as Q/K)
+    x_abs = x_normalized.abs()
+    sign = torch.where(x_normalized >= 0.0, 1.0, -1.0)
+
+    quantized_abs = torch.where(x_abs < 0.25, 0.0,
+                    torch.where(x_abs < 0.625, 0.5,
+                    torch.where(x_abs < 0.875, 0.75,
+                    torch.where(x_abs < 1.25, 1.0,
+                    torch.where(x_abs < 1.75, 1.5,
+                    torch.where(x_abs < 2.5, 2.0,
+                    torch.where(x_abs < 3.5, 3.0,
+                    torch.where(x_abs < 5.0, 4.0,
+                                              6.0))))))))
+
+    x_quantized_blocks = quantized_abs * sign
+
+    # Reconstruct with scales
+    x_quantized_blocks = x_quantized_blocks * scales.unsqueeze(-1)
+
+    # Reshape back: [B, H, D, N_padded] -> transpose -> [B, H, N_padded, D] -> trim
+    x_quantized_transposed = x_quantized_blocks.view(B, H, D, N_padded)
+    x_quantized = x_quantized_transposed.transpose(-2, -1).contiguous()  # [B, H, N_padded, D]
+
+    # Trim N back to original length
+    if N_padded != N:
+        x_quantized = x_quantized[:, :, :N, :].contiguous()
+
+    return x_quantized, scales
+
+
 def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
     """
-    NVFP4 per-block microscaling quantization for Q, K, V tensors.
+    NVFP4 per-block microscaling quantization for Q and K tensors.
 
     Wrapper around nvfp4_quantize_standalone() that returns only the quantized
     tensor (discarding the scale factors). Uses the same per-block scaling
@@ -701,8 +785,11 @@ def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
     - Per-block scale = block_max / 6.0, rounded to FP8 E4M3
     - NVFP4 E2M1 quantization within each block
 
+    Note: For V tensors, use educational_quantize_v_standalone() which blocks
+    along the N (seq_len) dimension to match the real kernel's behavior.
+
     Args:
-        x (torch.Tensor): Input tensor [B, H, N, D] (Q, K, or V)
+        x (torch.Tensor): Input tensor [B, H, N, D] (Q or K)
 
     Returns:
         torch.Tensor: Quantized tensor [B, H, N, D] with NVFP4 E2M1 values
@@ -710,6 +797,28 @@ def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
     x_quantized, scales = nvfp4_quantize_standalone(x, block_size=16)
 
     debug_print(f"NVFP4 per-block quantization: D={x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
+
+    return x_quantized
+
+
+def educational_quantize_v_standalone(x: torch.Tensor) -> torch.Tensor:
+    """
+    NVFP4 per-block microscaling quantization for V tensor (blocks along N).
+
+    Unlike Q/K which block along D (head_dim), V is quantized with blocks
+    along N (seq_len) to match the real kernel's `scaled_fp4_quant_trans_kernel`.
+    The real CUDA kernel transposes V from [N, D] to [D, N] in shared memory,
+    then applies per-block-of-16 microscaling along the N dimension.
+
+    Args:
+        x (torch.Tensor): Input V tensor [B, H, N, D]
+
+    Returns:
+        torch.Tensor: Quantized tensor [B, H, N, D] with NVFP4 E2M1 values
+    """
+    x_quantized, scales = nvfp4_quantize_v_standalone(x, block_size=16)
+
+    debug_print(f"NVFP4 V quantization: N={x.shape[-2]} -> {scales.shape[-1]} blocks of 16 along N")
 
     return x_quantized
 
@@ -864,7 +973,7 @@ def sageattn3_torch_triton_standalone(
     # Step 2: Educational quantization
     q_quant = educational_quantize_standalone(q_smoothed)
     k_quant = educational_quantize_standalone(k_smoothed)
-    v_quant = educational_quantize_standalone(v)
+    v_quant = educational_quantize_v_standalone(v)
 
     # Step 3: Triton tiled online attention
     if debug:
