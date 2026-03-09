@@ -4,141 +4,141 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SageAttention is a high-performance CUDA kernel library that provides plug-and-play attention implementations with INT8/FP8 quantization for GPU inference acceleration. The project includes multiple versions (SageAttention, SageAttention2, SageAttention2++, SageAttention3) with optimized kernels for different GPU architectures (Ampere, Ada, Hopper, Blackwell).
+SageAttention is a high-performance CUDA kernel library providing plug-and-play attention with INT8/FP8/FP4 quantization for GPU inference acceleration. It includes:
+- **SageAttention/SageAttention2** (v2.2.0): INT8 QK + FP16/FP8 PV kernels for Ampere/Ada/Hopper GPUs (`sageattention/`)
+- **SageAttention2++**: Same codebase, uses `pv_accum_dtype="fp32+fp16"` two-level accumulation for higher speed
+- **SageAttention3**: FP4 microscaling kernels for Blackwell GPUs only (`sageattention3_blackwell/`, separate package `sageattn3`)
 
 ## Build and Development Commands
 
-### Installation and Build
+### Build SageAttention2/2++ from source
 ```bash
-# Install from PyPI (latest stable)
-pip install sageattention==2.2.0 --no-build-isolation
+# Editable install (preferred for development)
+EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128 pip install -e . -v --no-build-isolation
 
-# Build from source (optimized for parallel compilation)
+# Or use the quick build script
+./build_cmd.sh
+
+# Or classic install
 export EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128
 python setup.py install
-
-# Quick build script
-./build_cmd.sh
 ```
 
-### GPU Architecture Support
-The build system auto-detects GPU compute capabilities or uses `TORCH_CUDA_ARCH_LIST`:
+### Build SageAttention3 (Blackwell only, separate package)
+```bash
+cd sageattention3_blackwell
+# CUTLASS headers required - cloned automatically by setup.py if missing
+pip install -e . --no-build-isolation
+# Verify: python -c "from sageattn3 import sageattn3_blackwell; print('OK')"
+```
+
+### GPU Architecture Targeting
+Build auto-detects GPUs. To cross-compile or override:
 ```bash
 export TORCH_CUDA_ARCH_LIST="8.0;8.6;8.9;9.0;10.0;12.0;12.1"
 ```
+Skip CUDA build entirely (CI/sdist): `SAGEATTN_SKIP_CUDA_BUILD=1`
 
-### Testing and Benchmarking
+### Python Environment
 ```bash
-# Benchmark against FlashAttention2/3
+/mnt/disk1/yiliu7/sage/bin/python
+```
+
+### Benchmarking
+```bash
+# SM89 (Ada) kernel benchmark
 cd bench
 python bench_qk_int8_pv_fp8_cuda.py --pv_accum_dtype fp32+fp16 --quant_gran per_warp
 
-# Run example inference
+# End-to-end inference benchmark
 cd example
 python cogvideox_infer.py --model cogvideox-2b --compile --attention_type sage
+# Sage3 on Blackwell:
+python cogvideox_infer.py --model cogvideox-2b --compile --attention_type sage3
+```
+
+### Standalone Tests
+```bash
+cd standalone
+python test_standalone.py [--verbose] [--performance] [--accuracy-only]
+
+# Sage3 Blackwell kernel demo
+cd sageattention3_blackwell/examples
+python sageattn3_demo.py
 ```
 
 ## Architecture Overview
 
-### Core Components
+### Two Separate Packages, One Repo
 
-**Kernel Architecture**: Multi-backend system with CUDA and Triton implementations
-- `csrc/qattn/`: CUDA kernels optimized for specific architectures (SM80, SM89, SM90)
-- `sageattention/triton/`: Triton-based kernels for broader compatibility
-- `sageattention/core.py`: Unified API that selects optimal kernels based on hardware
+**`sageattention` (v2.2.0)** — The main package for SM80-SM121:
+- `sageattention/core.py`: **Entry point**. The `sageattn()` function auto-selects the optimal kernel by reading `torch.cuda.get_device_capability()`. This is the most important file for understanding how kernels are dispatched.
+- `sageattention/quant.py`: CUDA-backed quantization utilities (per-block INT8, per-warp INT8, sub-mean, per-channel FP8). Wraps the `_fused` C extension.
+- `sageattention/sm{80,89,90}_compile.py`: `torch.library.custom_op` wrappers around CUDA extensions (`_qattn_sm*`). These register kernels with `torch.compile` via fake implementations.
+- `sageattention/triton/`: Triton-based attention kernels (non-causal, causal, varlen) and quantization kernels (per-block, per-thread). Used as fallback or for SM86.
+- `sageattention/fa3_wrapper.py`: FlashAttention3 compatibility wrapper for benchmarking.
 
-**Quantization Strategy**: Two-stage quantization approach
-- QK^T: INT8 quantization with outlier smoothing (per-block, per-warp, per-thread granularities)
-- PV: FP8 quantization with two-level accumulation strategy (FP32+FP16 for SageAttention2++)
+**`sageattn3` (v1.0.0)** — Blackwell-only package in `sageattention3_blackwell/`:
+- `sageattn3/api.py`: High-level API (`sageattn3_blackwell()`), FP4 quantization functions, and Triton preprocessing kernels
+- `sageattn3/blackwell/`: CUTLASS-based CUDA kernel (TMA + WGMMA, `api.cu` + headers)
+- `sageattn3/quantization/`: FP4 quantization CUDA kernel
+- Requires CUDA 12.8+, CUTLASS headers (auto-cloned to `csrc/cutlass/`)
 
-**GPU-Specific Optimizations**:
-- SM80/SM86 (Ampere): Base INT8/FP16 kernels
-- SM89/Ada (RTX 40xx): FP8 support with CUDA 12.4+
-- SM90/Hopper (H100): Native FP8 tensor cores and WGMMA
-- SM100+/Blackwell (RTX 50xx): Advanced FP4 microscaling (SageAttention3)
+### Kernel Selection Logic (core.py `sageattn()`)
 
-### Module Structure
+| GPU Arch | Kernel Path | Notes |
+|----------|------------|-------|
+| SM80 (A100) | `sageattn_qk_int8_pv_fp16_cuda` | INT8 QK, FP16 PV, FP32 accum |
+| SM86 (A6000) | `sageattn_qk_int8_pv_fp16_triton` | Triton fallback |
+| SM89 (RTX 4090) | `sageattn_qk_int8_pv_fp8_cuda` | FP8 PV, `fp32+fp16` accum (2++) |
+| SM90 (H100) | `sageattn_qk_int8_pv_fp8_cuda_sm90` | WGMMA-optimized, `fp32+fp32` accum |
+| SM100 (B200) | `sageattn_qk_int8_pv_fp16_cuda` | Falls back to SM80 path |
+| SM120/121 (RTX 5090) | `sageattn_qk_int8_pv_fp8_cuda` | FP8 with per_warp, `fp32+fp16` |
 
-```
-sageattention/
-├── core.py              # Main API and kernel selection logic
-├── quant.py            # CUDA quantization utilities
-├── triton/             # Triton kernel implementations
-│   ├── attn_*.py       # Attention kernels (causal, non-causal, varlen)
-│   └── quant_*.py      # Quantization kernels (per-block, per-thread)
-├── sm{80,89,90}_compile.py  # Architecture-specific kernel compilation
-└── fa3_wrapper.py      # FlashAttention3 compatibility wrapper
-```
+### CUDA Extension Structure
 
-### Sage 3 (Sage Attention 3) code and paper source 
-- Paper:
-    - ./papers/sageattention/SageAttention3-2505.11594.pdf
-    - ./papers/sageattention/sage_v3
-    - ./papers/sageattention/paper_summaries.md
-- Codebase:
-    - ./sageattention3_blackwell
+The build produces these C extensions:
+- `sageattention._fused`: Quantization and preprocessing kernels (all architectures)
+- `sageattention._qattn_sm80`: INT8 QK + FP16 PV attention (SM80+)
+- `sageattention._qattn_sm89`: INT8 QK + FP8 PV attention with inst_buf variants (SM89+)
+- `sageattention._qattn_sm90`: Hopper-specific WGMMA attention (SM90 only)
+- `fp4attn_cuda` / `fp4quant_cuda`: Sage3 Blackwell FP4 kernels (separate package)
 
-### E2E Example:
-- /mnt/disk1/yiliu7/SageAttention-Fork/example/cogvideox_infer.py
-```bash
-cd example
-python cogvideox_infer.py --model cogvideox-2b --attention_type sage
-```
+### Key Quantization Concepts
 
-### Key APIs
+- **Outlier smoothing**: Subtracting K's mean (`smooth_k`) before quantization reduces outlier impact
+- **Quantization granularities**: `per_block` > `per_warp` > `per_thread` (finer = more accurate, slightly slower)
+- **Two-level accumulation** (`fp32+fp16`): Short-term FP16 accumulator flushed to FP32 buffer every few iterations — this is what makes SageAttention2++ faster than plain FP32 accumulation
+- **V smoothing**: For FP8 PV path, V is mean-subtracted and the correction is added back post-attention
+- **Tensor layouts**: `"HND"` = `[B, H, N, D]`, `"NHD"` = `[B, N, H, D]`. Internally represented as int (0=NHD, 1=HND)
 
-**Primary Interface**:
-```python
-from sageattention import sageattn
-output = sageattn(q, k, v, tensor_layout="HND", is_causal=False)
-```
+### Build System Specifics
 
-**Specialized Kernels**:
-- `sageattn_qk_int8_pv_fp16_cuda`: INT8 QK, FP16 PV (best accuracy)
-- `sageattn_qk_int8_pv_fp8_cuda`: INT8 QK, FP8 PV (SageAttention2)
-- `sageattn_qk_int8_pv_fp8_cuda_sm90`: Hopper-optimized version
-- `sageattn_varlen`: Variable sequence length support
-
-### Build System Details
-
-**CUDA Compilation Pipeline**:
-- Multi-threaded compilation with configurable parallelism (`EXT_PARALLEL`, `MAX_JOBS`)
-- Architecture-specific extensions compiled conditionally based on target GPUs
-- Custom `BuildExtensionSeparateDir` to prevent object file conflicts during parallel builds
-
-**Dependencies**:
-- CUDA 12.0+ (12.3+ for Hopper, 12.4+ for Ada FP8, 12.8+ for Blackwell)
-- PyTorch 2.3.0+, Triton 3.0+
-- Optional: `flash-attn` for benchmarking comparisons
+- `BuildExtensionSeparateDir`: Custom build class in `setup.py` that isolates object files per-extension to prevent conflicts during parallel compilation
+- `EXT_PARALLEL` controls extension-level parallelism (how many extensions compile simultaneously)
+- `MAX_JOBS` controls file-level parallelism within each extension
+- `NVCC_APPEND_FLAGS="--threads N"` controls NVCC internal parallelism
 
 ### Integration Patterns
 
-**Plug-and-play Replacement**:
+**Global drop-in replacement** (works for most models):
 ```python
-import torch.nn.functional as F
 from sageattention import sageattn
-F.scaled_dot_product_attention = sageattn  # Global replacement
+import torch.nn.functional as F
+F.scaled_dot_product_attention = sageattn
 ```
 
-**Model-specific Integration**: Modify attention processors in Diffusers models (see `example/modify_model/` for targeted replacements in transformer blocks)
+**Model-specific replacement** (recommended for DiT models):
+See `example/modify_model/modify_mochi.py` for how to replace attention only in specific transformer blocks.
 
-**Distributed Inference**: Compatible with `torch.compile` (non-cudagraphs mode) and model parallelism frameworks like xDiT
+## Reference Materials
 
-## Development Notes
+- SageAttention3 paper: `papers/sageattention/SageAttention3-2505.11594.pdf`
+- Paper LaTeX source: `papers/sageattention/sage_v3/src/`
+- Paper summaries: `papers/sageattention/paper_summaries.md`
+- Research tasks/experiments: `tasks/` (pseudocode implementations, Triton reference kernels, benchmarks, analysis)
 
-- The codebase prioritizes hardware-specific optimizations over generality
-- Kernel selection in `core.py` uses runtime GPU detection and capability matching
-- Quantization parameters (`quant_gran`, `pv_accum_dtype`) significantly impact performance/accuracy tradeoffs
-- Two-level accumulation (`fp32+fp16`) is key to SageAttention2++ performance gains
-- Variable-length attention (`sageattn_varlen`) requires different kernel paths for batched inference
+## Git Best Practices
 
-### Test
-- python envs: /mnt/disk1/yiliu7/sage/bin/python
-- sage3 real kerenl demo: SageAttention-Fork/sageattention3_blackwell/examples/sageattn3_demo.py
-
-### Git Best Practices
-- **Create small, focused commits** instead of large commits with all changes
-  - Each commit should have a single, clear purpose (feat:, test:, docs:, fix:, refactor:)
-  - Makes git history easier to review and understand
-  - Enables safer rollbacks and better debugging
-  - Example: separate commits for implementation, tests, and documentation
+- **Create small, focused commits** with a single clear purpose (feat:, test:, docs:, fix:, refactor:)
+- Separate commits for implementation, tests, and documentation

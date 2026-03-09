@@ -11,10 +11,16 @@ PROMPT_FILE="/mnt/disk1/yiliu7/SageAttention-Fork/example/videos/open_sora_promp
     # "$VIDEO_BASE/sdpa" \
 
 attn_variant="sage3_triton"
-attn_variant="sage3"
-
+# attn_variant="sage3"
+timestamp="20260304-105016"
+attn_variant="sage3_standalone"
+timestamp="20260305-105014"
+# /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_standalone/20260305-105014
+# /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_triton/20260304-105016
 python "$SCRIPT_DIR/eval_clip_metrics.py" \
   --video_dirs \
-    "$VIDEO_BASE/$attn_variant" \
+    "$VIDEO_BASE/$attn_variant/$timestamp" \
   --prompt_file "$PROMPT_FILE" \
-  --output_path "$SCRIPT_DIR/eval_clip_results_$attn_variant.json"
+  --output_path "$SCRIPT_DIR/eval_clip_results_$attn_variant_$timestamp.json"
+
+
