@@ -140,6 +140,17 @@ def round_to_e4m3_triton(scale):
     scale_type = scale.dtype
     return scale.to(tl.float8e4nv).to(scale_type)
 
+
+def round_to_e4m3_torch(scales):
+    """
+    Round scales to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
+
+    This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
+        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);q
+        SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
+    """
+    return scales.to(torch.float8_e4m3fn).to(scales.dtype)
+
 @triton.jit
 def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     """
@@ -595,15 +606,6 @@ def apply_qk_smoothing_standalone(q: torch.Tensor, k: torch.Tensor) -> Tuple[tor
     return q_smoothed, k_smoothed, delta_s
 
 
-def round_to_e4m3_torch(scales):
-    """
-    Round scales to E4M3 precision via FP32 -> E4M3 -> FP32 cast round-trip.
-
-    This truncates the mantissa to 3 bits, matching the real CUDA kernel's behavior:
-        reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8) = __nv_fp8_e4m3(SFValue);q
-        SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
-    """
-    return scales.to(torch.float8_e4m3fn).to(scales.dtype)
 
 def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
     """
