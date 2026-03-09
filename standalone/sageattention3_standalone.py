@@ -49,11 +49,16 @@ import warnings
 import time
 from typing import Optional, Tuple, Union
 
+# Save a reference to PyTorch's original SDPA before any monkey-patching.
+# This is used in fallback paths to avoid infinite recursion when
+# F.scaled_dot_product_attention has been replaced with our function.
+_original_torch_sdpa = torch.nn.functional.scaled_dot_product_attention
+
 # Embedded constants from sageattn3_torch.py (exact copy)
 FP4_MAX = 6.0
 FP8_MAX = 448.0
-COMBINED_SCALE = 2688  # FP8_MAX * FP4_MAX
 MICROSCALE_BLOCK_SIZE = 16
+COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
 
 # NVFP4 E2M1 representable values: ±{0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6}
 NVFP4_E2M1_VALUES = [-6, -4, -3, -2, -1.5, -1, -0.75, -0.5, 0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6]
@@ -139,11 +144,6 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     Returns:
         p_quantized: [128, 128] quantized probabilities
     """
-    MICROSCALE_BLOCK_SIZE = 16
-    FP8_MAX = 448.0
-    FP4_MAX = 6.0
-    COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
-
     # Level 1: Global per-row FP32 scaling
     row_max = tl.max(tl.abs(p_tile), axis=1)
     global_scales = tl.maximum(row_max / COMBINED_MAX, 1e-8)
@@ -645,7 +645,6 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
 
     # Per-block scaling (matching real kernel: SFValue = vecMax / 6.0f)
     # 6.0 is the max representable FP4 E2M1 value (constant, not a global statistic)
-    FP4_MAX = 6.0
 
     # Compute per-block max and per-block scale
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, N, num_blocks]
@@ -727,25 +726,32 @@ def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[
         x_padded = x
         N_padded = N
 
-    # Transpose to [B, H, D, N_padded] then reshape into blocks along N
+    # Transpose to [B, H, D, N_padded] then reshape into blocks along N.
+    # .contiguous() is needed so .view() works, but we immediately free the
+    # padded input to limit peak memory.
     x_transposed = x_padded.transpose(-2, -1).contiguous()  # [B, H, D, N_padded]
+    del x_padded
     num_blocks = N_padded // block_size
     x_blocks = x_transposed.view(B, H, D, num_blocks, block_size)
+    # x_blocks is a view of x_transposed — no extra memory
 
     # Per-block scaling (same math as Q/K: SFValue = vecMax / 6.0f)
-    FP4_MAX = 6.0
 
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, D, num_blocks]
     scales = block_max / FP4_MAX
+    del block_max
     scales = torch.clamp(scales, min=1e-8)
     scales = round_to_e4m3_torch(scales)
 
-    # Normalize to FP4 range
-    x_normalized = x_blocks / scales.unsqueeze(-1)  # [B, H, D, num_blocks, block_size]
+    # Normalize in-place to FP4 range, then quantize.
+    # We reuse x_blocks (which is a view of x_transposed) by dividing in-place
+    # to avoid allocating a separate x_normalized tensor.
+    x_blocks = x_blocks / scales.unsqueeze(-1)  # creates new tensor, old view freed
 
     # Apply NVFP4 E2M1 quantization (same logic as Q/K)
-    x_abs = x_normalized.abs()
-    sign = torch.where(x_normalized >= 0.0, 1.0, -1.0)
+    x_abs = x_blocks.abs()
+    sign = x_blocks.sign()
+    del x_blocks  # free normalized tensor
 
     quantized_abs = torch.where(x_abs < 0.25, 0.0,
                     torch.where(x_abs < 0.625, 0.5,
@@ -756,15 +762,17 @@ def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[
                     torch.where(x_abs < 3.5, 3.0,
                     torch.where(x_abs < 5.0, 4.0,
                                               6.0))))))))
+    del x_abs
 
-    x_quantized_blocks = quantized_abs * sign
+    # Reconstruct: quantized_value * sign * scale
+    quantized_abs.mul_(sign)  # in-place: quantized_abs now holds signed values
+    del sign
+    quantized_abs.mul_(scales.unsqueeze(-1))  # in-place: apply scales
 
-    # Reconstruct with scales
-    x_quantized_blocks = x_quantized_blocks * scales.unsqueeze(-1)
-
-    # Reshape back: [B, H, D, N_padded] -> transpose -> [B, H, N_padded, D] -> trim
-    x_quantized_transposed = x_quantized_blocks.view(B, H, D, N_padded)
-    x_quantized = x_quantized_transposed.transpose(-2, -1).contiguous()  # [B, H, N_padded, D]
+    # Reshape back: [B, H, D, num_blocks, block_size] -> [B, H, D, N_padded]
+    # then transpose -> [B, H, N_padded, D]
+    x_quantized = quantized_abs.view(B, H, D, N_padded).transpose(-2, -1).contiguous()
+    del quantized_abs
 
     # Trim N back to original length
     if N_padded != N:
@@ -1051,14 +1059,14 @@ def scaled_dot_product_attention(
         import triton
     except ImportError:
         warnings.warn("Triton not available, falling back to PyTorch SDPA", UserWarning)
-        return torch.nn.functional.scaled_dot_product_attention(
+        return _original_torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
 
     # Check device compatibility
     if not query.is_cuda:
         debug_print("SageAttention3 requires CUDA tensors, falling back to PyTorch SDPA")
-        return torch.nn.functional.scaled_dot_product_attention(
+        return _original_torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
 
@@ -1104,7 +1112,7 @@ def scaled_dot_product_attention(
         if torch.isnan(output).any() or torch.isinf(output).any():
             warnings.warn("SageAttention3 produced NaN/Inf outputs, falling back to PyTorch SDPA",
                          UserWarning)
-            return torch.nn.functional.scaled_dot_product_attention(
+            return _original_torch_sdpa(
                 query, key, value, attn_mask, dropout_p, is_causal, scale
             )
 
@@ -1113,287 +1121,6 @@ def scaled_dot_product_attention(
     except Exception as e:
         debug_print(f"SageAttention3 failed with error: {e}")
         debug_print("Falling back to PyTorch SDPA")
-        return torch.nn.functional.scaled_dot_product_attention(
+        return _original_torch_sdpa(
             query, key, value, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=is_causal, scale=scale
         )
-
-# ============================================================================
-# Section 8: Built-in Testing Functions
-# ============================================================================
-
-def test_import_and_dependencies():
-    """Test that all required dependencies are available."""
-    debug_print("Testing imports and dependencies...")
-
-    try:
-        import torch
-        assert torch.cuda.is_available(), "CUDA not available"
-        debug_print("✅ PyTorch with CUDA available")
-    except Exception as e:
-        debug_print(f"❌ PyTorch/CUDA error: {e}")
-        return False
-
-    try:
-        import triton
-        debug_print("✅ Triton available")
-    except ImportError as e:
-        debug_print(f"❌ Triton not available: {e}")
-        return False
-
-    return True
-
-def test_basic_functionality():
-    """Test basic functionality with small tensors."""
-    debug_print("Testing basic functionality...")
-
-    try:
-        B, H, N, D = 1, 2, 64, 32
-        device = 'cuda'
-        dtype = torch.float16
-
-        q = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        k = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        v = torch.randn(B, H, N, D, dtype=dtype, device=device)
-
-        # Test the main function
-        output = scaled_dot_product_attention(q, k, v, is_causal=False)
-
-        assert output.shape == (B, H, N, D), f"Output shape mismatch: {output.shape}"
-        assert not torch.isnan(output).any(), "Output contains NaN"
-        assert not torch.isinf(output).any(), "Output contains Inf"
-
-        debug_print(f"✅ Basic test passed, output shape: {output.shape}")
-        return True
-
-    except Exception as e:
-        debug_print(f"❌ Basic test failed: {e}")
-        return False
-
-def test_accuracy_vs_pytorch_sdpa():
-    """Test accuracy against PyTorch SDPA."""
-    debug_print("Testing accuracy vs PyTorch SDPA...")
-
-    try:
-        B, H, N, D = 1, 4, 128, 64
-        device = 'cuda'
-        dtype = torch.float16
-
-        # Create test tensors
-        torch.manual_seed(42)
-        q = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        k = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        v = torch.randn(B, H, N, D, dtype=dtype, device=device)
-
-        # Get reference output from PyTorch SDPA
-        with torch.no_grad():
-            ref_output = torch.nn.functional.scaled_dot_product_attention(
-                q, k, v, is_causal=False
-            )
-
-        # Get SageAttention3 output
-        with torch.no_grad():
-            sage_output = scaled_dot_product_attention(q, k, v, is_causal=False)
-
-        # Compute cosine similarity
-        ref_flat = ref_output.flatten().float()
-        sage_flat = sage_output.flatten().float()
-
-        cos_sim = torch.nn.functional.cosine_similarity(
-            ref_flat.unsqueeze(0), sage_flat.unsqueeze(0)
-        ).item()
-
-        debug_print(f"Cosine similarity: {cos_sim:.6f}")
-
-        # Should be > 0.95 (95% similarity)
-        if cos_sim > 0.95:
-            debug_print("✅ Accuracy test passed")
-            return True
-        else:
-            debug_print(f"❌ Accuracy test failed: cosine similarity {cos_sim:.6f} < 0.95")
-            return False
-
-    except Exception as e:
-        debug_print(f"❌ Accuracy test failed: {e}")
-        return False
-
-def test_performance_benchmarks():
-    """Basic performance benchmarking."""
-    debug_print("Testing performance...")
-
-    try:
-        B, H, N, D = 2, 8, 512, 64
-        device = 'cuda'
-        dtype = torch.float16
-
-        q = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        k = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        v = torch.randn(B, H, N, D, dtype=dtype, device=device)
-
-        # Warmup
-        for _ in range(3):
-            _ = scaled_dot_product_attention(q, k, v, is_causal=False)
-        torch.cuda.synchronize()
-
-        # Benchmark SageAttention3
-        start_time = time.time()
-        for _ in range(10):
-            _ = scaled_dot_product_attention(q, k, v, is_causal=False)
-        torch.cuda.synchronize()
-        sage_time = (time.time() - start_time) / 10
-
-        # Benchmark PyTorch SDPA
-        start_time = time.time()
-        for _ in range(10):
-            _ = torch.nn.functional.scaled_dot_product_attention(q, k, v, is_causal=False)
-        torch.cuda.synchronize()
-        pytorch_time = (time.time() - start_time) / 10
-
-        speedup = pytorch_time / sage_time if sage_time > 0 else 0
-
-        debug_print(f"SageAttention3 time: {sage_time*1000:.3f}ms")
-        debug_print(f"PyTorch SDPA time: {pytorch_time*1000:.3f}ms")
-        debug_print(f"Speedup: {speedup:.2f}x")
-        debug_print("✅ Performance benchmark completed")
-
-        return True
-
-    except Exception as e:
-        debug_print(f"❌ Performance test failed: {e}")
-        return False
-
-def test_edge_cases():
-    """Test edge cases and causal masking."""
-    debug_print("Testing edge cases...")
-
-    try:
-        # Test causal masking
-        B, H, N, D = 1, 1, 32, 16
-        device = 'cuda'
-        dtype = torch.float16
-
-        q = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        k = torch.randn(B, H, N, D, dtype=dtype, device=device)
-        v = torch.randn(B, H, N, D, dtype=dtype, device=device)
-
-        # Test causal attention
-        output_causal = scaled_dot_product_attention(q, k, v, is_causal=True)
-        assert output_causal.shape == (B, H, N, D), "Causal output shape mismatch"
-
-        # Test different sequence lengths
-        for seq_len in [16, 64, 256]:
-            if seq_len <= 512:  # Avoid memory issues
-                q_test = torch.randn(1, 2, seq_len, 32, dtype=dtype, device=device)
-                k_test = torch.randn(1, 2, seq_len, 32, dtype=dtype, device=device)
-                v_test = torch.randn(1, 2, seq_len, 32, dtype=dtype, device=device)
-
-                output_test = scaled_dot_product_attention(q_test, k_test, v_test)
-                assert output_test.shape == (1, 2, seq_len, 32), f"Shape mismatch for seq_len {seq_len}"
-
-        debug_print("✅ Edge case tests passed")
-        return True
-
-    except Exception as e:
-        debug_print(f"❌ Edge case test failed: {e}")
-        return False
-
-def run_all_tests():
-    """Run comprehensive test suite."""
-    print("=" * 60)
-    print("SageAttention3 Standalone Test Suite")
-    print("=" * 60)
-
-    tests = [
-        ("Import and Dependencies", test_import_and_dependencies),
-        ("Basic Functionality", test_basic_functionality),
-        ("Accuracy vs PyTorch SDPA", test_accuracy_vs_pytorch_sdpa),
-        ("Performance Benchmarks", test_performance_benchmarks),
-        ("Edge Cases", test_edge_cases),
-    ]
-
-    results = []
-    for test_name, test_func in tests:
-        print(f"\n[{test_name}]")
-        print("-" * 40)
-        result = test_func()
-        results.append((test_name, result))
-
-    print("\n" + "=" * 60)
-    print("TEST RESULTS SUMMARY")
-    print("=" * 60)
-
-    passed = 0
-    for test_name, result in results:
-        status = "✅ PASS" if result else "❌ FAIL"
-        print(f"{status:<8} {test_name}")
-        if result:
-            passed += 1
-
-    print(f"\nPassed: {passed}/{len(tests)} tests")
-
-    if passed == len(tests):
-        print("🎉 All tests passed! SageAttention3 is ready for use.")
-    else:
-        print("⚠️  Some tests failed. Check the output above for details.")
-
-    return passed == len(tests)
-
-# ============================================================================
-# Section 9: Utility Functions
-# ============================================================================
-
-def validate_inputs(query, key, value):
-    """Validate input tensor shapes and types."""
-    if query.dim() != 4 or key.dim() != 4 or value.dim() != 4:
-        raise ValueError("All input tensors must be 4D [B, H, N, D]")
-
-    B, H, N, D = query.shape
-    if key.shape != (B, H, N, D):
-        raise ValueError(f"Key shape {key.shape} doesn't match query {query.shape}")
-    if value.shape != (B, H, N, D):
-        raise ValueError(f"Value shape {value.shape} doesn't match query {query.shape}")
-
-    if not (query.is_cuda and key.is_cuda and value.is_cuda):
-        raise ValueError("All tensors must be on CUDA device")
-
-def print_environment_info():
-    """Print environment configuration information."""
-    print("Environment Configuration:")
-    print(f"  SAGE3_DEBUG: {SAGE3_DEBUG}")
-    print(f"  SAGE3_DISABLE_PER_BLOCK_MEAN: {SAGE3_DISABLE_PER_BLOCK_MEAN}")
-    print(f"  SAGE3_TILE_SIZE: {SAGE3_TILE_SIZE}")
-    print(f"  SAGE3_BENCHMARK: {SAGE3_BENCHMARK}")
-
-# ============================================================================
-# Section 10: Main Entry Point
-# ============================================================================
-
-if __name__ == "__main__":
-    print("SageAttention3 Standalone Implementation")
-    print("=" * 50)
-    print("✅ Complete SageAttention3 algorithm with all optimizations")
-    print("✅ Two-level P quantization (FP8 global + FP4 microscaling)")
-    print("✅ NVFP4 E2M1 quantization with proper global scaling")
-    print("✅ QK smoothing with delta_s correction")
-    print("✅ Online attention algorithm with tiled processing")
-    print("✅ Causal masking support")
-    print("✅ SDPA-compatible interface")
-    print("✅ Built-in testing and benchmarking")
-    print("")
-    print("Expected: 99.99% cosine similarity with PyTorch SDPA")
-    print("Performance: Up to 143x speedup on supported hardware")
-    print("")
-
-    print_environment_info()
-    print("")
-
-    # Run tests if requested
-    if SAGE3_DEBUG or '--test' in os.sys.argv:
-        success = run_all_tests()
-        exit(0 if success else 1)
-    else:
-        print("To run tests, set SAGE3_DEBUG=1 or pass --test")
-        print("")
-        print("Quick usage example:")
-        print("  import torch.nn.functional as F")
-        print("  from sageattention3_standalone import scaled_dot_product_attention")
-        print("  F.scaled_dot_product_attention = scaled_dot_product_attention")
