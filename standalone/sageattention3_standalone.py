@@ -41,6 +41,7 @@ Environment Variables:
 # ============================================================================
 
 import torch
+_original_torch_sdpa = torch.nn.functional.scaled_dot_product_attention  # Keep original for testing
 import triton
 import triton.language as tl
 import math
@@ -83,9 +84,9 @@ logger = SimpleLogger()
 # ============================================================================
 
 @triton.jit
-def apply_nvfp4_e2m1_quantization_triton(x):
+def apply_e2m1_quantization_triton(x):
     """
-    Apply NVFP4 E2M1 quantization in Triton.
+    Apply E2M1 quantization in Triton.
 
     Representable values: ±{0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6}
     """
@@ -102,6 +103,27 @@ def apply_nvfp4_e2m1_quantization_triton(x):
                     tl.where(x_abs < 3.5, 3.0,      # (3.0 + 4.0) / 2 = 3.5
                     tl.where(x_abs < 5.0, 4.0,      # (4.0 + 6.0) / 2 = 5.0
                                           6.0))))))))
+
+    return quantized_abs * sign
+
+def apply_e2m1_quantization_torch(x):
+    """
+    Apply E2M1 quantization in PyTorch.
+
+    Representable values: ±{0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6}
+    """
+    x_abs = torch.abs(x)
+    sign = torch.where(x >= 0.0, 1.0, -1.0)
+
+    quantized_abs = torch.where(x_abs < 0.25, 0.0,
+                    torch.where(x_abs < 0.625, 0.5,
+                    torch.where(x_abs < 0.875, 0.75,
+                    torch.where(x_abs < 1.25, 1.0,
+                    torch.where(x_abs < 1.75, 1.5,
+                    torch.where(x_abs < 2.5, 2.0,
+                    torch.where(x_abs < 3.5, 3.0,
+                    torch.where(x_abs < 5.0, 4.0,
+                                  6.0))))))))
 
     return quantized_abs * sign
 
@@ -139,6 +161,12 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
     Returns:
         p_quantized: [128, 128] quantized probabilities
     """
+
+    FP4_MAX = 6.0
+    FP8_MAX = 448.0
+    MICROSCALE_BLOCK_SIZE = 16
+    COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
+
     # Level 1: Global per-row FP32 scaling
     row_max = tl.max(tl.abs(p_tile), axis=1)
     global_scales = tl.maximum(row_max / COMBINED_MAX, 1e-8)
@@ -231,7 +259,7 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
 
     # Apply microscaling and quantization
     p_microscaled = p_level1 / microscale_broadcasted
-    p_quantized = apply_nvfp4_e2m1_quantization_triton(p_microscaled)
+    p_quantized = apply_e2m1_quantization_triton(p_microscaled)
 
     # Reconstruct with both scale levels
     p_final = (p_quantized * microscale_broadcasted * global_scales[:, None])
@@ -653,25 +681,8 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
     # Normalize to FP4 range
     x_normalized = x_blocks / scales.unsqueeze(-1)  # [B, H, N, num_blocks, block_size]
 
-    # Apply NVFP4 E2M1 quantization using the Triton function logic
-    x_quantized_blocks = torch.zeros_like(x_normalized)
-
-    # Apply quantization element-wise
-    x_abs = x_normalized.abs()
-    sign = torch.where(x_normalized >= 0.0, 1.0, -1.0)
-
-    # Find nearest FP4 E2M1 level (matching Triton implementation)
-    quantized_abs = torch.where(x_abs < 0.25, 0.0,
-                    torch.where(x_abs < 0.625, 0.5,    # (0.5 + 0.75) / 2 = 0.625
-                    torch.where(x_abs < 0.875, 0.75,   # (0.75 + 1.0) / 2 = 0.875
-                    torch.where(x_abs < 1.25, 1.0,     # (1.0 + 1.5) / 2 = 1.25
-                    torch.where(x_abs < 1.75, 1.5,     # (1.5 + 2.0) / 2 = 1.75
-                    torch.where(x_abs < 2.5, 2.0,      # (2.0 + 3.0) / 2 = 2.5
-                    torch.where(x_abs < 3.5, 3.0,      # (3.0 + 4.0) / 2 = 3.5
-                    torch.where(x_abs < 5.0, 4.0,      # (4.0 + 6.0) / 2 = 5.0
-                                              6.0))))))))
-
-    x_quantized_blocks = quantized_abs * sign
+    # Apply E2M1 quantization using the Triton function logic
+    x_quantized_blocks = apply_e2m1_quantization_torch(x_normalized)
 
     # Reconstruct with scales
     x_quantized_blocks = x_quantized_blocks * scales.unsqueeze(-1)
@@ -775,55 +786,6 @@ def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[
 
     return x_quantized, scales
 
-
-def educational_quantize_standalone(x: torch.Tensor) -> torch.Tensor:
-    """
-    NVFP4 per-block microscaling quantization for Q and K tensors.
-
-    Wrapper around nvfp4_quantize_standalone() that returns only the quantized
-    tensor (discarding the scale factors). Uses the same per-block scaling
-    strategy as the real SageAttention3 Blackwell kernel:
-
-    - 16-element blocks along the D (head_dim) dimension
-    - Per-block scale = block_max / 6.0, rounded to FP8 E4M3
-    - NVFP4 E2M1 quantization within each block
-
-    Note: For V tensors, use educational_quantize_v_standalone() which blocks
-    along the N (seq_len) dimension to match the real kernel's behavior.
-
-    Args:
-        x (torch.Tensor): Input tensor [B, H, N, D] (Q or K)
-
-    Returns:
-        torch.Tensor: Quantized tensor [B, H, N, D] with NVFP4 E2M1 values
-    """
-    x_quantized, scales = nvfp4_quantize_standalone(x, block_size=16)
-
-    debug_print(f"NVFP4 per-block quantization: D={x.shape[-1]} -> {scales.shape[-1]} blocks of 16")
-
-    return x_quantized
-
-
-def educational_quantize_v_standalone(x: torch.Tensor) -> torch.Tensor:
-    """
-    NVFP4 per-block microscaling quantization for V tensor (blocks along N).
-
-    Unlike Q/K which block along D (head_dim), V is quantized with blocks
-    along N (seq_len) to match the real kernel's `scaled_fp4_quant_trans_kernel`.
-    The real CUDA kernel transposes V from [N, D] to [D, N] in shared memory,
-    then applies per-block-of-16 microscaling along the N dimension.
-
-    Args:
-        x (torch.Tensor): Input V tensor [B, H, N, D]
-
-    Returns:
-        torch.Tensor: Quantized tensor [B, H, N, D] with NVFP4 E2M1 values
-    """
-    x_quantized, scales = nvfp4_quantize_v_standalone(x, block_size=16)
-
-    debug_print(f"NVFP4 V quantization: N={x.shape[-2]} -> {scales.shape[-1]} blocks of 16 along N")
-
-    return x_quantized
 
 # ============================================================================
 # Section 5: Triton Host Function
@@ -973,10 +935,10 @@ def sageattn3_torch_triton_standalone(
         if debug:
             debug_print("QK smoothing disabled")
 
-    # Step 2: Educational quantization
-    q_quant = educational_quantize_standalone(q_smoothed)
-    k_quant = educational_quantize_standalone(k_smoothed)
-    v_quant = educational_quantize_v_standalone(v)
+    # Step 2: NVFP4 quantization
+    q_quant,_ = nvfp4_quantize_standalone(q_smoothed, block_size=16)
+    k_quant,_ = nvfp4_quantize_standalone(k_smoothed, block_size=16)
+    v_quant,_ = nvfp4_quantize_v_standalone(v, block_size=16)
 
     # Step 3: Triton tiled online attention
     if debug:
