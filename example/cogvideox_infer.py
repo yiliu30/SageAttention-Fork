@@ -185,7 +185,7 @@ if __name__ == "__main__":
     video_dir = f"videos/{args.model}/{prompt_path_prefix}/{args.attention_type}/{timestamp}"
     if args.quick_e2e:
         prompt_path_prefix = "smoke"
-        video_dir = f"videos/{args.model}/{prompt_path_prefix}/{args.attention_type}/quick_e2e_{timestamp}"
+        video_dir = f"videos/{args.model}/{prompt_path_prefix}/quick_e2e_{args.attention_type}"
     os.makedirs(video_dir, exist_ok=True)
 
     with open(prompt_path, "r", encoding="utf-8") as file:
