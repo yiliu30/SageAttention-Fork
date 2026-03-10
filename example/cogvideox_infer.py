@@ -266,7 +266,9 @@ if __name__ == "__main__":
             frames_dir = f"{video_dir}/{global_i}_frames"
             os.makedirs(frames_dir, exist_ok=True)
             for frame_idx, frame in enumerate(video):
-                frame.save(f"{frames_dir}/frame_{frame_idx:03d}.png")
+                filename = f"{frames_dir}/frame_{frame_idx:03d}.png"
+                frame.save(filename)
+                print(f"saved frame {frame_idx} to {filename}")
             print(f"Saved {len(video)} frames to {frames_dir}/")
 
         export_to_video(video, f"{video_dir}/{global_i}.mp4", fps=8)
