@@ -102,6 +102,8 @@ python cogvideox_infer.py --model cogvideox-2b --attention_type sage3_standalone
 - `sageattn3/quantization/`: FP4 quantization CUDA kernel
 - Requires CUDA 12.8+, CUTLASS headers (auto-cloned to `csrc/cutlass/`)
 
+- Triton implementation: `standalone/`
+
 <!-- ### Kernel Selection Logic (core.py `sageattn()`)
 
 | GPU Arch | Kernel Path | Notes |

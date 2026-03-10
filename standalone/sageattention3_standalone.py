@@ -34,6 +34,7 @@ Environment Variables:
     SAGE3_DISABLE_PER_BLOCK_MEAN=1 - Disable QK smoothing
     SAGE3_TILE_SIZE=128     - Set tile size (default: 128)
     SAGE3_BENCHMARK=1       - Show performance metrics
+    SAGE3_QUANT_FORMAT=nvfp4 - Quantization format: 'nvfp4' (default) or 'mxfp4'
 """
 
 # ============================================================================
@@ -48,7 +49,8 @@ import math
 import os
 import warnings
 import time
-from typing import Optional, Tuple, Union
+from dataclasses import dataclass
+from typing import Callable, Optional, Tuple, Union
 
 # Embedded constants from sageattn3_torch.py (exact copy)
 FP4_MAX = 6.0
@@ -64,6 +66,10 @@ SAGE3_DEBUG = os.getenv('SAGE3_DEBUG', '0').lower() in ('1', 'true')
 SAGE3_DISABLE_PER_BLOCK_MEAN = os.getenv('SAGE3_DISABLE_PER_BLOCK_MEAN', '0').lower() in ('1', 'true')
 SAGE3_TILE_SIZE =  128
 SAGE3_BENCHMARK = os.getenv('SAGE3_BENCHMARK', '0').lower() in ('1', 'true')
+SAGE3_QUANT_FORMAT = os.getenv('SAGE3_QUANT_FORMAT', 'nvfp4').lower()  # 'nvfp4', 'mxfp4', future: 'mxfp8'
+
+print(f"SageAttention3 Standalone - Quant Format: {SAGE3_QUANT_FORMAT.upper()}")
+print(f"SAGE3_DEBUG={SAGE3_DEBUG}, SAGE3_DISABLE_PER_BLOCK_MEAN={SAGE3_DISABLE_PER_BLOCK_MEAN}, "f"SAGE3_TILE_SIZE={SAGE3_TILE_SIZE}, SAGE3_BENCHMARK={SAGE3_BENCHMARK}")
 
 def debug_print(*args, **kwargs):
     """Debug print that respects SAGE3_DEBUG setting."""
@@ -150,6 +156,75 @@ def round_to_e4m3_torch(scales):
         SFValue = float(reinterpret_cast<__nv_fp8_e4m3&>(SFValueFP8));
     """
     return scales.to(torch.float8_e4m3fn).to(scales.dtype)
+
+
+@triton.jit
+def round_to_e8m0_triton(scale):
+    """
+    Round scale to E8M0 precision (power-of-2 only).
+
+    E8M0: 8 exponent bits, 0 mantissa bits. Represents values as 2^(e - 127).
+    Uses round-to-nearest on the exponent.
+    """
+    scale_type = scale.dtype
+    abs_scale = tl.abs(scale)
+    log2_scale = tl.log2(tl.maximum(abs_scale, 5.88e-39))  # 2^-127
+    rounded = tl.extra.cuda.libdevice.round(log2_scale)
+    rounded = tl.maximum(tl.minimum(rounded, 127.0), -127.0)
+    return tl.exp2(rounded).to(scale_type)
+
+
+def round_to_e8m0_torch(scales):
+    """
+    Round scales to E8M0 precision (power-of-2 only).
+
+    E8M0: 8 exponent bits, 0 mantissa bits. Represents values as 2^(e - 127).
+    Uses round-to-nearest on the exponent.
+    """
+    abs_scales = scales.abs()
+    log2_scales = torch.log2(abs_scales.clamp(min=2**-127))
+    rounded_log2 = torch.round(log2_scales)
+    rounded_log2 = torch.clamp(rounded_log2, min=-127, max=127)
+    return torch.exp2(rounded_log2)
+
+
+# ============================================================================
+# Quantization Format Configuration
+# ============================================================================
+
+@dataclass(frozen=True)
+class QuantFormat:
+    """Configuration for a microscaling quantization format.
+
+    Adding a new format (e.g., MXFP8) requires:
+      1. A pair of round_to_<dtype>_{torch,triton} functions
+      2. A new QuantFormat instance
+      3. Registration in QUANT_FORMATS
+    """
+    name: str
+    block_size: int                           # elements per microscaling block
+    round_scale_torch: Callable               # PyTorch scale-rounding fn
+    round_scale_triton: Callable              # Triton JIT scale-rounding fn
+    fp_max: float = FP4_MAX                   # max representable value (6.0 for E2M1)
+
+
+# Pre-defined formats
+NVFP4 = QuantFormat(
+    name="nvfp4",
+    block_size=16,
+    round_scale_torch=round_to_e4m3_torch,
+    round_scale_triton=round_to_e4m3_triton,
+)
+
+MXFP4 = QuantFormat(
+    name="mxfp4",
+    block_size=32,
+    round_scale_torch=round_to_e8m0_torch,
+    round_scale_triton=round_to_e8m0_triton,
+)
+
+# Registry for easy lookup by name (extensible for future formats like mxfp8)
+QUANT_FORMATS = {f.name: f for f in [NVFP4, MXFP4]}
 
 @triton.jit
 def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
@@ -279,6 +354,95 @@ def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
 
     return p_final
 
+
+@triton.jit
+def two_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N: tl.constexpr):
+    """
+    Two-level P quantization with MXFP4 microscaling (block_size=32, E8M0 scales).
+
+    For fixed 128x128 tiles:
+    - Level 1: Per-row global scale (row_max / COMBINED_MAX)
+    - Level 2: Per-row, per-32-col-block microscale with E8M0 rounding
+
+    128 columns / 32 = 4 blocks per row.
+
+    Block layout:
+      Block 0: cols 0-31
+      Block 1: cols 32-63
+      Block 2: cols 64-95
+      Block 3: cols 96-127
+
+    Args:
+        p_tile: [128, 128] attention probabilities (fixed size)
+        BLOCK_N: Column dimension as compile-time constant (must be 128)
+
+    Returns:
+        p_quantized: [128, 128] quantized probabilities
+    """
+
+    FP4_MAX = 6.0
+    FP8_MAX = 448.0
+    MICROSCALE_BLOCK_SIZE = 32
+    COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
+
+    # Level 1: Global per-row FP32 scaling
+    row_max = tl.max(tl.abs(p_tile), axis=1)
+    global_scales = tl.maximum(row_max / COMBINED_MAX, 1e-8)
+    p_level1 = p_tile / global_scales[:, None]
+
+    # Level 2: Per-row, per-32-col-block microscaling
+    col_indices = tl.arange(0, BLOCK_N)
+    block_ids = col_indices // MICROSCALE_BLOCK_SIZE
+
+    # Block 0 (columns 0-31): Per-row max
+    block_0_mask = (col_indices >= 0) & (col_indices < 32)
+    p_block_0 = tl.where(block_0_mask[None, :], tl.abs(p_level1), 0.0)
+    block_0_max = tl.max(p_block_0, axis=1)
+
+    # Block 1 (columns 32-63)
+    block_1_mask = (col_indices >= 32) & (col_indices < 64)
+    p_block_1 = tl.where(block_1_mask[None, :], tl.abs(p_level1), 0.0)
+    block_1_max = tl.max(p_block_1, axis=1)
+
+    # Block 2 (columns 64-95)
+    block_2_mask = (col_indices >= 64) & (col_indices < 96)
+    p_block_2 = tl.where(block_2_mask[None, :], tl.abs(p_level1), 0.0)
+    block_2_max = tl.max(p_block_2, axis=1)
+
+    # Block 3 (columns 96-127)
+    block_3_mask = (col_indices >= 96) & (col_indices < 128)
+    p_block_3 = tl.where(block_3_mask[None, :], tl.abs(p_level1), 0.0)
+    block_3_max = tl.max(p_block_3, axis=1)
+
+    # Compute per-row microscales for each block
+    block_0_microscale = tl.maximum(block_0_max / FP4_MAX, 1e-8)
+    block_1_microscale = tl.maximum(block_1_max / FP4_MAX, 1e-8)
+    block_2_microscale = tl.maximum(block_2_max / FP4_MAX, 1e-8)
+    block_3_microscale = tl.maximum(block_3_max / FP4_MAX, 1e-8)
+
+    # Apply E8M0 rounding to each block's per-row microscale
+    block_0_microscale_e8m0 = round_to_e8m0_triton(block_0_microscale)
+    block_1_microscale_e8m0 = round_to_e8m0_triton(block_1_microscale)
+    block_2_microscale_e8m0 = round_to_e8m0_triton(block_2_microscale)
+    block_3_microscale_e8m0 = round_to_e8m0_triton(block_3_microscale)
+
+    # Build [128, 128] microscale tensor
+    microscale_final = (
+        tl.where(block_ids[None, :] == 0, block_0_microscale_e8m0[:, None],
+        tl.where(block_ids[None, :] == 1, block_1_microscale_e8m0[:, None],
+        tl.where(block_ids[None, :] == 2, block_2_microscale_e8m0[:, None],
+                                           block_3_microscale_e8m0[:, None])))
+    )
+
+    # Apply microscaling and quantization
+    p_microscaled = p_level1 / microscale_final
+    p_quantized = apply_e2m1_quantization_triton(p_microscaled)
+
+    # Reconstruct with both scale levels
+    p_final = (p_quantized * microscale_final * global_scales[:, None])
+
+    return p_final
+
 # ============================================================================
 # Section 3: Main Attention Kernel (Exact copy-paste)
 # ============================================================================
@@ -309,6 +473,7 @@ def tiled_online_attention_kernel(
     BLOCK_M: tl.constexpr,
     BLOCK_N: tl.constexpr,
     HEAD_DIM: tl.constexpr,
+    USE_MXFP4: tl.constexpr = False,
 ):
     """
     Tiled online attention kernel with all SageAttention3 features.
@@ -453,7 +618,10 @@ def tiled_online_attention_kernel(
             p_tile = tl.exp(qk_shifted)
 
             # Two-level P quantization
-            p_quantized = two_level_p_quantization_triton(p_tile, BLOCK_N)
+            if USE_MXFP4:
+                p_quantized = two_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N)
+            else:
+                p_quantized = two_level_p_quantization_triton(p_tile, BLOCK_N)
             # PV computation
             pv_tile = tl.dot(p_quantized, v_tile, out_dtype=tl.float32)
 
@@ -608,56 +776,38 @@ def apply_qk_smoothing_standalone(q: torch.Tensor, k: torch.Tensor) -> Tuple[tor
 
 
 
-def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+def fp4_quantize_standalone(x: torch.Tensor, fmt: QuantFormat) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    NVFP4 E2M1 per-block microscaling quantization for Q and K tensors.
+    Generic FP4 E2M1 per-block microscaling quantization for Q and K tensors.
 
-    This function implements the EXACT per-block scaling from the actual SageAttention3
-    Blackwell kernel (`sageattn3/quantization/fp4_quantization_4d.cu`). Blocks are formed
-    along the D (head_dim) dimension, which matches the Q/K quantization path
-    (`scale_and_quant_fp4()` / `scale_and_quant_fp4_permute()`).
-
-    For V tensor quantization, use nvfp4_quantize_v_standalone() which blocks along
-    the N (seq_len) dimension to match `scale_and_quant_fp4_transpose()`.
-
-    There is NO tensor-level global scale. Scaling is strictly per-block: each block of
-    16 elements gets its own FP8 E4M3 scale factor computed from the block's local max.
-
-    From the real CUDA kernel:
-    ```cuda
-    float vecMax = float(__hmax(localMax.x, localMax.y));  // per-block max
-    float SFValue = vecMax / 6.0f;  // per-block scale (6.0 = FP4 E2M1 max)
-    SFValueFP8 = __nv_fp8_e4m3(SFValue);  // round scale to FP8 E4M3
-    ```
-
-    The divisor 6.0 is a constant (the max representable FP4 E2M1 value), not a
-    tensor-level statistic. Dividing by 6.0 maps each block into the [-6, 6] range
-    so the hardware `cvt.rn.satfinite.e2m1x2` instruction can quantize optimally.
+    Blocks are formed along the D (head_dim) dimension. The block size and
+    scale-rounding function are determined by the QuantFormat parameter,
+    making this work for NVFP4 (block_size=16, E4M3 scales) and MXFP4
+    (block_size=32, E8M0 scales) alike.
 
     Steps:
-        1. Reshape tensor into blocks of 16 along the D (head_dim) dimension
+        1. Reshape tensor into blocks of `fmt.block_size` along D
         2. Compute per-block max: block_max = max(|block|)
-        3. Compute per-block scale: scale = block_max / 6.0, rounded to FP8 E4M3
+        3. Compute per-block scale: scale = block_max / fp_max, rounded via fmt
         4. Normalize each block: normalized = block / scale
         5. Quantize to nearest FP4 E2M1 level
         6. Reconstruct: quantized = quantized_normalized * scale
 
     Args:
         x (torch.Tensor): Input tensor [B, H, N, D] where D is the head dimension
-        block_size (int): Microscaling block size along D dimension (default: 16)
+        fmt (QuantFormat): Quantization format configuration
 
     Returns:
         Tuple[torch.Tensor, torch.Tensor]:
             - x_quantized: Quantized tensor [B, H, N, D] - same shape as input
-            - scales: FP8 E4M3 per-block scale factors [B, H, N, D//block_size]
+            - scales: Per-block scale factors [B, H, N, D//block_size]
     """
     import torch.nn.functional as F
-
     B, H, N, D = x.shape
+    block_size = fmt.block_size
 
     # Handle dimensions not divisible by block_size
     if D % block_size != 0:
-        # Pad the K-dimension to be divisible by block_size
         pad_size = block_size - (D % block_size)
         x_padded = F.pad(x, (0, pad_size), mode='constant', value=0)
         D_padded = D + pad_size
@@ -665,26 +815,23 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
         x_padded = x
         D_padded = D
 
-    # Reshape for K-dimension aligned microscaling blocks: [B, H, N, D//block_size, block_size]
+    # Reshape for D-dimension aligned microscaling blocks: [B, H, N, D//block_size, block_size]
     num_blocks = D_padded // block_size
     x_blocks = x_padded.view(B, H, N, num_blocks, block_size)
 
-    # Per-block scaling (matching real kernel: SFValue = vecMax / 6.0f)
-    # 6.0 is the max representable FP4 E2M1 value (constant, not a global statistic)
-
-    # Compute per-block max and per-block scale
+    # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, N, num_blocks]
-    scales = block_max / FP4_MAX  # per-block scale factor
+    scales = block_max / fmt.fp_max  # per-block scale factor
 
     # Prevent division by zero
     scales = torch.clamp(scales, min=1e-8)
-    # round scales to FP8 E4M3 precision (matching real kernel)
-    scales = round_to_e4m3_torch(scales)
+    # Round scales to the format's scale precision
+    scales = fmt.round_scale_torch(scales)
 
     # Normalize to FP4 range
     x_normalized = x_blocks / scales.unsqueeze(-1)  # [B, H, N, num_blocks, block_size]
 
-    # Apply E2M1 quantization using the Triton function logic
+    # Apply E2M1 quantization
     x_quantized_blocks = apply_e2m1_quantization_torch(x_normalized)
 
     # Reconstruct with scales
@@ -702,29 +849,27 @@ def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[to
     return x_quantized, scales
 
 
-def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+def fp4_quantize_v_standalone(x: torch.Tensor, fmt: QuantFormat) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    NVFP4 E2M1 per-block microscaling quantization for V tensor.
+    Generic FP4 E2M1 per-block microscaling quantization for V tensor.
 
     Unlike Q/K which block along D (head_dim), V is quantized with blocks
-    along N (seq_len) to match the real kernel's `scaled_fp4_quant_trans_kernel`.
-
-    The real CUDA kernel transposes V from [N, D] to [D, N] in shared memory,
-    then applies per-block-of-16 microscaling along the N dimension. This means
-    each block of 16 contains consecutive tokens for a single feature channel.
+    along N (seq_len). The block size and scale-rounding function are
+    determined by the QuantFormat parameter.
 
     Args:
         x (torch.Tensor): Input V tensor [B, H, N, D]
-        block_size (int): Number of elements per microscaling block (default: 16)
+        fmt (QuantFormat): Quantization format configuration
 
     Returns:
         Tuple containing:
             - x_quantized: Quantized tensor [B, H, N, D] - same shape as input
-            - scales: FP8 E4M3 per-block scale factors [B, H, D, N//block_size]
+            - scales: Per-block scale factors [B, H, D, N//block_size]
     """
     import torch.nn.functional as F
 
     B, H, N, D = x.shape
+    block_size = fmt.block_size
 
     # Pad N to multiple of block_size (unlike Q/K which pad D)
     if N % block_size != 0:
@@ -736,47 +881,24 @@ def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[
         N_padded = N
 
     # Transpose to [B, H, D, N_padded] then reshape into blocks along N.
-    # .contiguous() is needed so .view() works, but we immediately free the
-    # padded input to limit peak memory.
     x_transposed = x_padded.transpose(-2, -1).contiguous()  # [B, H, D, N_padded]
     del x_padded
     num_blocks = N_padded // block_size
     x_blocks = x_transposed.view(B, H, D, num_blocks, block_size)
-    # x_blocks is a view of x_transposed — no extra memory
 
-    # Per-block scaling (same math as Q/K: SFValue = vecMax / 6.0f)
-
+    # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, D, num_blocks]
-    scales = block_max / FP4_MAX
+    scales = block_max / fmt.fp_max
     del block_max
     scales = torch.clamp(scales, min=1e-8)
-    scales = round_to_e4m3_torch(scales)
+    scales = fmt.round_scale_torch(scales)
 
-    # Normalize in-place to FP4 range, then quantize.
-    # We reuse x_blocks (which is a view of x_transposed) by dividing in-place
-    # to avoid allocating a separate x_normalized tensor.
+    # Normalize to FP4 range, then quantize.
     x_blocks = x_blocks / scales.unsqueeze(-1)  # creates new tensor, old view freed
 
-    # Apply NVFP4 E2M1 quantization (same logic as Q/K)
-    x_abs = x_blocks.abs()
-    sign = x_blocks.sign()
-    del x_blocks  # free normalized tensor
-
-    quantized_abs = torch.where(x_abs < 0.25, 0.0,
-                    torch.where(x_abs < 0.625, 0.5,
-                    torch.where(x_abs < 0.875, 0.75,
-                    torch.where(x_abs < 1.25, 1.0,
-                    torch.where(x_abs < 1.75, 1.5,
-                    torch.where(x_abs < 2.5, 2.0,
-                    torch.where(x_abs < 3.5, 3.0,
-                    torch.where(x_abs < 5.0, 4.0,
-                                              6.0))))))))
-    del x_abs
-
-    # Reconstruct: quantized_value * sign * scale
-    quantized_abs.mul_(sign)  # in-place: quantized_abs now holds signed values
-    del sign
-    quantized_abs.mul_(scales.unsqueeze(-1))  # in-place: apply scales
+    # Apply E2M1 quantization
+    quantized_abs = apply_e2m1_quantization_torch(x_blocks)
+    quantized_abs.mul_(scales.unsqueeze(-1))  # in-place
 
     # Reshape back: [B, H, D, num_blocks, block_size] -> [B, H, D, N_padded]
     # then transpose -> [B, H, N_padded, D]
@@ -788,6 +910,17 @@ def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[
         x_quantized = x_quantized[:, :, :N, :].contiguous()
 
     return x_quantized, scales
+
+
+# Backwards-compatible wrappers
+def nvfp4_quantize_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+    """NVFP4 E2M1 quantization for Q/K (backwards-compatible wrapper)."""
+    return fp4_quantize_standalone(x, NVFP4)
+
+
+def nvfp4_quantize_v_standalone(x: torch.Tensor, block_size: int = 16) -> Tuple[torch.Tensor, torch.Tensor]:
+    """NVFP4 E2M1 quantization for V (backwards-compatible wrapper)."""
+    return fp4_quantize_v_standalone(x, NVFP4)
 
 
 # ============================================================================
@@ -802,7 +935,8 @@ def tiled_online_attention_triton(
     sm_scale: float,
     is_causal: bool,
     tile_size_q: int = 128,
-    tile_size_k: int = 128
+    tile_size_k: int = 128,
+    quant_format: str = "nvfp4",
 ) -> torch.Tensor:
     """
     Triton implementation of tiled online attention.
@@ -819,6 +953,7 @@ def tiled_online_attention_triton(
         is_causal: Apply causal masking
         tile_size_q: Query tile size (used as BLOCK_M)
         tile_size_k: Key/Value tile size (used as BLOCK_N)
+        quant_format: Quantization format name ('nvfp4' or 'mxfp4')
 
     Returns:
         output: Attention output [B, H, N, D]
@@ -837,6 +972,9 @@ def tiled_online_attention_triton(
         has_delta_s = False
         # Create dummy delta_s for kernel
         delta_s = torch.zeros(B, H, 1, N, device=q.device, dtype=q.dtype)
+
+    # Resolve quant format flag for Triton constexpr
+    use_mxfp4 = (quant_format == "mxfp4")
 
     # Grid dimensions: (batch, head, num_query_tiles)
     num_q_tiles = (N + tile_size_q - 1) // tile_size_q
@@ -870,6 +1008,7 @@ def tiled_online_attention_triton(
         BLOCK_M=tile_size_q,
         BLOCK_N=tile_size_k,
         HEAD_DIM=triton.next_power_of_2(D) if D <= 256 else D,
+        USE_MXFP4=use_mxfp4,
     )
 
     return output
@@ -891,6 +1030,7 @@ def sageattn3_torch_triton_standalone(
     tile_size_k: int = 128,
     return_lse: bool = False,
     debug: bool = False,
+    quant_format: str = "mxfp4",
 ):
     """
     SageAttention3 Triton implementation with same API as PyTorch version.
@@ -909,6 +1049,7 @@ def sageattn3_torch_triton_standalone(
         tile_size_k: Key/Value tile size
         return_lse: Return log-sum-exp (not implemented)
         debug: Enable debug logging
+        quant_format: Quantization format ('nvfp4' or 'mxfp4')
 
     Returns:
         output: Attention output [B, H, N, D]
@@ -938,14 +1079,15 @@ def sageattn3_torch_triton_standalone(
         if debug:
             debug_print("QK smoothing disabled")
 
-    # Step 2: NVFP4 quantization
-    q_quant,_ = nvfp4_quantize_standalone(q_smoothed, block_size=16)
-    k_quant,_ = nvfp4_quantize_standalone(k_smoothed, block_size=16)
-    v_quant,_ = nvfp4_quantize_v_standalone(v, block_size=16)
+    # Step 2: FP4 quantization (format-dependent block size and scale rounding)
+    fmt = QUANT_FORMATS[quant_format]
+    q_quant,_ = fp4_quantize_standalone(q_smoothed, fmt)
+    k_quant,_ = fp4_quantize_standalone(k_smoothed, fmt)
+    v_quant,_ = fp4_quantize_v_standalone(v, fmt)
 
     # Step 3: Triton tiled online attention
     if debug:
-        debug_print("Starting Triton kernel execution")
+        debug_print(f"Starting Triton kernel execution (quant_format={quant_format})")
 
     output = tiled_online_attention_triton(
         q_quant, k_quant, v_quant,
@@ -953,7 +1095,8 @@ def sageattn3_torch_triton_standalone(
         sm_scale=sm_scale,
         is_causal=is_causal,
         tile_size_q=tile_size_q,
-        tile_size_k=tile_size_k
+        tile_size_k=tile_size_k,
+        quant_format=quant_format,
     )
 
     if debug:
@@ -1047,6 +1190,12 @@ def scaled_dot_product_attention(
     # Determine per_block_mean setting from environment
     use_per_block_mean = not SAGE3_DISABLE_PER_BLOCK_MEAN
 
+    # Determine quantization format from kwargs or environment
+    quant_format = kwargs.pop('quant_format', SAGE3_QUANT_FORMAT)
+    if quant_format not in QUANT_FORMATS:
+        raise ValueError(f"Unknown quant_format '{quant_format}'. "
+                         f"Available: {list(QUANT_FORMATS.keys())}")
+
     # Call the Triton implementation with full SageAttention3 algorithm
     try:
         output = sageattn3_torch_triton_standalone(
@@ -1059,7 +1208,8 @@ def scaled_dot_product_attention(
             per_block_mean=use_per_block_mean,  # Configurable QK smoothing
             tile_size_q=SAGE3_TILE_SIZE,
             tile_size_k=SAGE3_TILE_SIZE,
-            debug=SAGE3_DEBUG
+            debug=SAGE3_DEBUG,
+            quant_format=quant_format,
         )
 
         # Check for NaN/Inf in output

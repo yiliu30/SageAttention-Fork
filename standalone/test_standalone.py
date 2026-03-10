@@ -34,7 +34,9 @@ try:
         sageattn3_torch_triton_standalone,
         run_all_tests as builtin_tests,
         debug_print,
-        SAGE3_DEBUG
+        SAGE3_DEBUG,
+        QUANT_FORMATS,
+        SAGE3_QUANT_FORMAT,
     )
     print("✅ Successfully imported SageAttention3 standalone module")
 except ImportError as e:
@@ -251,6 +253,72 @@ def test_accuracy_comprehensive(results: TestResults):
 
         except Exception as e:
             results.add_result(f"Accuracy: {description}", False, str(e))
+
+def test_mxfp4_accuracy(results: TestResults):
+    """Test MXFP4 accuracy against PyTorch SDPA.
+
+    MXFP4 uses block_size=32 with E8M0 (power-of-2) scales, which is
+    coarser than NVFP4 (block_size=16, E4M3 scales). Expected CosSim
+    is lower (~90%+ vs ~95%+ for NVFP4).
+    """
+    test_cases = [
+        # (B, H, N, D, is_causal, description)
+        (1, 1, 32, 16, False, "MXFP4 Minimal Non-Causal"),
+        (1, 8, 64, 32, False, "MXFP4 Small Non-Causal"),
+        (2, 4, 128, 64, False, "MXFP4 Medium Non-Causal"),
+        (2, 4, 128, 64, True, "MXFP4 Medium Causal"),
+    ]
+
+    for B, H, N, D, is_causal, description in test_cases:
+        try:
+            log_verbose(f"Testing MXFP4 accuracy: {description} [{B}×{H}×{N}×{D}]")
+
+            torch.manual_seed(42)
+            q = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+            k = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+            v = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+
+            # Get PyTorch SDPA reference
+            with torch.no_grad():
+                ref_output = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+
+            # Get SageAttention3 output with MXFP4
+            with torch.no_grad():
+                sage_output = scaled_dot_product_attention(
+                    q, k, v, is_causal=is_causal, quant_format="mxfp4"
+                )
+
+            # Compute metrics
+            ref_flat = ref_output.flatten().float()
+            sage_flat = sage_output.flatten().float()
+
+            cos_sim = F.cosine_similarity(ref_flat.unsqueeze(0), sage_flat.unsqueeze(0)).item()
+            l2_error = torch.norm(ref_flat - sage_flat) / torch.norm(ref_flat)
+
+            log_verbose(f"  Cosine similarity: {cos_sim:.6f}")
+            log_verbose(f"  L2 relative error: {l2_error:.6f}")
+
+            # Relaxed thresholds for MXFP4 (coarser quantization)
+            cos_sim_threshold = 0.85  # 85% similarity (relaxed from 90% for NVFP4)
+            l2_threshold = 0.3        # 30% relative error (relaxed from 20% for NVFP4)
+
+            if cos_sim >= cos_sim_threshold and l2_error <= l2_threshold:
+                results.add_result(
+                    f"Accuracy: {description}",
+                    True,
+                    f"cos_sim={cos_sim:.4f}, l2_err={l2_error:.4f}"
+                )
+            else:
+                results.add_result(
+                    f"Accuracy: {description}",
+                    False,
+                    f"cos_sim={cos_sim:.4f} (need >{cos_sim_threshold}), "
+                    f"l2_err={l2_error:.4f} (need <{l2_threshold})"
+                )
+
+        except Exception as e:
+            results.add_result(f"Accuracy: {description}", False, str(e))
+
 
 # ============================================================================
 # Performance Tests
@@ -520,6 +588,10 @@ def main():
     print("\n[Accuracy Tests]")
     print("-" * 50)
     test_accuracy_comprehensive(results)
+
+    print("\n[MXFP4 Accuracy Tests]")
+    print("-" * 50)
+    test_mxfp4_accuracy(results)
 
     if args.performance and TEST_DEVICE == 'cuda':
         print("\n[Performance Tests]")
