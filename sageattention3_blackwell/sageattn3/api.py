@@ -136,7 +136,7 @@ def blockscaled_fp4_attn(qlist: Tuple,
     return fp4attn_cuda.fwd(qlist[0], klist[0], vlist[0], qlist[1], klist[1], vlist[1], delta_s, KL, None, softmax_scale, is_causal, per_block_mean, is_bf16)
 
 
-def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = False, **kwargs):
+def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = True, **kwargs):
     # breakpoint()
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
