@@ -168,6 +168,7 @@ def round_to_e8m0_triton(scale):
     """
     scale_type = scale.dtype
     abs_scale = tl.abs(scale)
+    # FIXME: round to power-of-2
     log2_scale = tl.log2(tl.maximum(abs_scale, 5.88e-39))  # 2^-127
     rounded = tl.extra.cuda.libdevice.round(log2_scale)
     rounded = tl.maximum(tl.minimum(rounded, 127.0), -127.0)
@@ -182,6 +183,7 @@ def round_to_e8m0_torch(scales):
     Uses round-to-nearest on the exponent.
     """
     abs_scales = scales.abs()
+    # FIXME: round to power-of-2
     log2_scales = torch.log2(abs_scales.clamp(min=2**-127))
     rounded_log2 = torch.round(log2_scales)
     rounded_log2 = torch.clamp(rounded_log2, min=-127, max=127)
