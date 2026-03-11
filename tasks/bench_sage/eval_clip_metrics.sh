@@ -17,6 +17,9 @@ attn_variant="sage3_standalone"
 timestamp="20260305-105014"
 # /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_standalone/20260309-043931
 timestamp="20260309-043931"
+# /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_standalone_mxfp4/20260310-054124
+attn_variant="sage3_standalone_mxfp4"
+timestamp="20260310-054124"
 # /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_standalone/20260305-105014
 # /mnt/disk1/yiliu7/SageAttention-Fork/example/videos/cogvideox-2b/open_sora_prompts/sage3_triton/20260304-105016
 python "$SCRIPT_DIR/eval_clip_metrics.py" \
