@@ -44,7 +44,7 @@ def check_if_cuda_home_none(global_option: str) -> None:
 
 
 def append_nvcc_threads(nvcc_extra_args):
-    return nvcc_extra_args + ["--threads", "4"]
+    return nvcc_extra_args + ["--threads", "32"]
 
 
 cmdclass = {}
@@ -98,7 +98,7 @@ if not SKIP_CUDA_BUILD:
         "--expt-relaxed-constexpr",
         "--expt-extended-lambda",
         "--use_fast_math",
-        # "--ptxas-options=-v",  # printing out number of registers
+        "--ptxas-options=-v",  # printing out number of registers
         "--ptxas-options=--verbose,--warn-on-local-memory-usage",  # printing out number of registers
         "-lineinfo",
         "-DCUTLASS_DEBUG_TRACE_LEVEL=0",  # Can toggle for debugging

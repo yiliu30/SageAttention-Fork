@@ -1,26 +1,56 @@
 from torch.nn.functional import scaled_dot_product_attention as sdpa
 import torch
-from flash_attn.utils.benchmark import benchmark_forward
+# from flash_attn.utils.benchmark import benchmark_forward
+
+import torch
+import torch.utils.benchmark as benchmark
+
+
+def benchmark_forward(
+    fn, *inputs, repeats=10, desc="", verbose=True, amp=False, amp_dtype=torch.float16, **kwinputs
+):
+    """Use Pytorch Benchmark on the forward pass of an arbitrary function."""
+    if verbose:
+        print(desc, "- Forward pass")
+
+    def amp_wrapper(*inputs, **kwinputs):
+        with torch.autocast(device_type="cuda", dtype=amp_dtype, enabled=amp):
+            fn(*inputs, **kwinputs)
+
+    t = benchmark.Timer(
+        stmt="fn_amp(*inputs, **kwinputs)",
+        globals={"fn_amp": amp_wrapper, "inputs": inputs, "kwinputs": kwinputs},
+        num_threads=torch.get_num_threads(),
+    )
+    m = t.timeit(repeats)
+    if verbose:
+        print(m)
+    return t, m
 
 import argparse
 
 parser = argparse.ArgumentParser(description='Benchmark Baseline')
-parser.add_argument('--method', type=str, default='fa2', choices=['fa2', 'torch', 'xformers'])
-parser.add_argument('--batch_size', type=int, default=4, help='Batch size')
+parser.add_argument('--method', type=str, default='fa2', choices=['fa2', 'torch', 'xformers', "sage3"])
+parser.add_argument('--batch_size', type=int, default=2, help='Batch size')
 parser.add_argument('--num_heads', type=int, default=32, help='Number of heads')
-parser.add_argument('--head_dim', type=int, default=128, help='Head dimension')
+parser.add_argument('--head_dim', type=int, default=64, help='Head dimension')
 args = parser.parse_args()
 
 head = args.num_heads
 batch = args.batch_size
 headdim = args.head_dim
 
-assert args.method in ['fa2', 'torch', 'xformers']
+assert args.method in ['fa2', 'torch', 'xformers', "sage3"], "Unsupported method"
 
 # only one of the following is True
 torch.backends.cuda.enable_flash_sdp(args.method == 'fa2')   # use FA2
 torch.backends.cuda.enable_math_sdp(args.method == 'torch')  # use Torch
 torch.backends.cuda.enable_mem_efficient_sdp(args.method == 'xformers')  # use xformers
+
+if args.method == "sage3":
+    from sageattn3 import sageattn3_blackwell
+    sdpa = sageattn3_blackwell
+    # torch.nn.functional.scaled_dot_product_attention = sdpa
 
 print(f"Baseline: {args.method}")
 print(f"batch: {batch}, head: {head}, headdim: {headdim}")

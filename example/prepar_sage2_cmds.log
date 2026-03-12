@@ -1,0 +1,33 @@
+
+ 1865  uv venv sage-attn
+ 1866  source sage-attn/bin/activate
+ 1867  cd sage-attn-xpu/
+ 1868  cd third_party/
+ 1869  cd SageAttention/
+ 1870  uv pip list | grep sage
+ 1871  uv pip list | grep torch
+ 1872  uv pip  install torch torchvision --index-url https://download.pytorch.org/whl/cu130
+ 1873  EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128  pip  install -e . -v
+ 1874  EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128 uv pip  install -e . -v
+ 1875  uv pip install packaging
+ 1876  EXT_PARALLEL=16 NVCC_APPEND_FLAGS="--threads 32" MAX_JOBS=128 uv pip  install -e . -v --no-build-isolation
+ 1877  cd example/
+ 1878  ls
+ 1879  smi
+ 1880  gpu 2,3
+ 1881  uv pip install tqdm
+ 1882  uv pip install diffusers
+ 1883  uv pip install transformers
+ 1884  uv pip install tiktoken
+ 1885  cd /storage/yiliu7/
+ 1886  hfdown THUDM/CogVideoX-2b
+ 1887  rm -rf ~/.cache/huggingface/hub/models--THUDM--CogVideoX-2b/
+ 1888  cd -
+ 1889  uv pip install transformers==4.57.3
+ 1890  uv pip install diffusers==0.33
+ 1891  uv pip install sentencepiece protobuf
+ 1892  uv pip list | grep acc
+ 1893  uv pip install accelerate
+ 1894  uv pip install opencv-python
+ 1895  python cogvideox_infer.py --model cogvideox-2b  --attention_type sage 
+ 1896  history | tee 2>&1 prepar_sage2_cmds.log
