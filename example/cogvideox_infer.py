@@ -109,6 +109,7 @@ def parse_args():
             "sage3_triton",
             "sage3_standalone",
             "sage3_standalone_mxfp4",
+            "sage3_standalone_mxfp4_s1",
             "fa3",
             "fa3_fp8",
         ],
@@ -130,7 +131,7 @@ if __name__ == "__main__":
 
     if args.model == "cogvideox-2b":
         model_path = "/storage/yiliu7/THUDM/CogVideoX-2b"
-        model_path = "/mnt/disk1/yiliu7/models/zai-org/CogVideoX-2b"
+        # model_path = "/mnt/disk1/yiliu7/models/zai-org/CogVideoX-2b"
         num_frames = 49
         torch_dtype = torch.float16
     else:
@@ -155,6 +156,8 @@ if __name__ == "__main__":
             os.environ['SAGE3_BENCHMARK'] = '1' if args.proportion else '0'  # Enable benchmarking in proportion mode
         if "mxfp4" in args.attention_type:
             os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4'
+        if "mxfp4_s1" in args.attention_type:
+            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4_s1'
         from sageattention3_standalone import scaled_dot_product_attention
         print(f"✅ Using SageAttention3 Standalone implementation")
         print(f"   Location: {standalone_path}")
