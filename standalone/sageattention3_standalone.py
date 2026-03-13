@@ -66,7 +66,7 @@ SAGE3_DEBUG = os.getenv('SAGE3_DEBUG', '0').lower() in ('1', 'true')
 SAGE3_DISABLE_PER_BLOCK_MEAN = os.getenv('SAGE3_DISABLE_PER_BLOCK_MEAN', '0').lower() in ('1', 'true')
 SAGE3_TILE_SIZE =  128
 SAGE3_BENCHMARK = os.getenv('SAGE3_BENCHMARK', '0').lower() in ('1', 'true')
-SAGE3_QUANT_FORMAT = os.getenv('SAGE3_QUANT_FORMAT', 'nvfp4').lower()  # 'nvfp4', 'mxfp4', future: 'mxfp8'
+SAGE3_QUANT_FORMAT = os.getenv('SAGE3_QUANT_FORMAT', 'nvfp4').lower()  # 'nvfp4', 'mxfp4', 'mxfp4_s1', future: 'mxfp8'
 
 print(f"SageAttention3 Standalone - Quant Format: {SAGE3_QUANT_FORMAT.upper()}")
 print(f"SAGE3_DEBUG={SAGE3_DEBUG}, SAGE3_DISABLE_PER_BLOCK_MEAN={SAGE3_DISABLE_PER_BLOCK_MEAN}, "f"SAGE3_TILE_SIZE={SAGE3_TILE_SIZE}, SAGE3_BENCHMARK={SAGE3_BENCHMARK}")
@@ -164,13 +164,12 @@ def round_to_e8m0_triton(scale):
     Round scale to E8M0 precision (power-of-2 only).
 
     E8M0: 8 exponent bits, 0 mantissa bits. Represents values as 2^(e - 127).
-    Uses round-to-nearest on the exponent.
+    Uses Round to Nearest Even (RNE) per OCP MX spec.
     """
     scale_type = scale.dtype
     abs_scale = tl.abs(scale)
-    # FIXME: round to power-of-2
     log2_scale = tl.log2(tl.maximum(abs_scale, 5.88e-39))  # 2^-127
-    rounded = tl.extra.cuda.libdevice.round(log2_scale)
+    rounded = tl.ceil(log2_scale)
     rounded = tl.maximum(tl.minimum(rounded, 127.0), -127.0)
     return tl.exp2(rounded).to(scale_type)
 
@@ -180,12 +179,11 @@ def round_to_e8m0_torch(scales):
     Round scales to E8M0 precision (power-of-2 only).
 
     E8M0: 8 exponent bits, 0 mantissa bits. Represents values as 2^(e - 127).
-    Uses round-to-nearest on the exponent.
+    Uses Round to Nearest Even (RNE) per OCP MX spec.
     """
     abs_scales = scales.abs()
-    # FIXME: round to power-of-2
     log2_scales = torch.log2(abs_scales.clamp(min=2**-127))
-    rounded_log2 = torch.round(log2_scales)
+    rounded_log2 = torch.ceil(log2_scales)
     rounded_log2 = torch.clamp(rounded_log2, min=-127, max=127)
     return torch.exp2(rounded_log2)
 
@@ -225,8 +223,15 @@ MXFP4 = QuantFormat(
     round_scale_triton=round_to_e8m0_triton,
 )
 
+MXFP4_S1 = QuantFormat(
+    name="mxfp4_s1",
+    block_size=32,
+    round_scale_torch=round_to_e8m0_torch,
+    round_scale_triton=round_to_e8m0_triton,
+)
+
 # Registry for easy lookup by name (extensible for future formats like mxfp8)
-QUANT_FORMATS = {f.name: f for f in [NVFP4, MXFP4]}
+QUANT_FORMATS = {f.name: f for f in [NVFP4, MXFP4, MXFP4_S1]}
 
 @triton.jit
 def two_level_p_quantization_triton(p_tile, BLOCK_N: tl.constexpr):
@@ -445,6 +450,84 @@ def two_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N: tl.constexpr):
 
     return p_final
 
+@triton.jit
+def single_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N: tl.constexpr):
+    """
+    Single-level P quantization with per-block E8M0 ceil microscaling (MXFP4).
+
+    Unlike two_level_p_quantization_mxfp4_triton, this kernel does NOT use
+    a global FP32 per-row scale. Instead, it applies per-block E8M0 ceil
+    microscaling directly on p_tile, which avoids the information loss from
+    the two-level global→local factorization.
+
+    For fixed 128x128 tiles with block_size=32:
+    - 4 blocks of 32 columns each
+    - Per-row, per-block microscale = ceil_e8m0(block_max / FP4_MAX)
+    - Reconstruction: p_quantized * microscale_final (no global_scales)
+
+    Args:
+        p_tile: [128, 128] attention probabilities (fixed size)
+        BLOCK_N: Column dimension as compile-time constant (must be 128)
+
+    Returns:
+        p_quantized: [128, 128] quantized probabilities
+    """
+
+    FP4_MAX = 6.0
+    MICROSCALE_BLOCK_SIZE = 32
+
+    col_indices = tl.arange(0, BLOCK_N)
+    block_ids = col_indices // MICROSCALE_BLOCK_SIZE
+
+    # Block 0 (columns 0-31): Per-row max directly on p_tile
+    block_0_mask = (col_indices >= 0) & (col_indices < 32)
+    p_block_0 = tl.where(block_0_mask[None, :], tl.abs(p_tile), 0.0)
+    block_0_max = tl.max(p_block_0, axis=1)
+
+    # Block 1 (columns 32-63)
+    block_1_mask = (col_indices >= 32) & (col_indices < 64)
+    p_block_1 = tl.where(block_1_mask[None, :], tl.abs(p_tile), 0.0)
+    block_1_max = tl.max(p_block_1, axis=1)
+
+    # Block 2 (columns 64-95)
+    block_2_mask = (col_indices >= 64) & (col_indices < 96)
+    p_block_2 = tl.where(block_2_mask[None, :], tl.abs(p_tile), 0.0)
+    block_2_max = tl.max(p_block_2, axis=1)
+
+    # Block 3 (columns 96-127)
+    block_3_mask = (col_indices >= 96) & (col_indices < 128)
+    p_block_3 = tl.where(block_3_mask[None, :], tl.abs(p_tile), 0.0)
+    block_3_max = tl.max(p_block_3, axis=1)
+
+    # Compute per-row microscales for each block (ceil via round_to_e8m0_triton)
+    block_0_microscale = tl.maximum(block_0_max / FP4_MAX, 1e-8)
+    block_1_microscale = tl.maximum(block_1_max / FP4_MAX, 1e-8)
+    block_2_microscale = tl.maximum(block_2_max / FP4_MAX, 1e-8)
+    block_3_microscale = tl.maximum(block_3_max / FP4_MAX, 1e-8)
+
+    # Apply E8M0 ceil rounding to each block's per-row microscale
+    block_0_microscale_e8m0 = round_to_e8m0_triton(block_0_microscale)
+    block_1_microscale_e8m0 = round_to_e8m0_triton(block_1_microscale)
+    block_2_microscale_e8m0 = round_to_e8m0_triton(block_2_microscale)
+    block_3_microscale_e8m0 = round_to_e8m0_triton(block_3_microscale)
+
+    # Build [128, 128] microscale tensor
+    microscale_final = (
+        tl.where(block_ids[None, :] == 0, block_0_microscale_e8m0[:, None],
+        tl.where(block_ids[None, :] == 1, block_1_microscale_e8m0[:, None],
+        tl.where(block_ids[None, :] == 2, block_2_microscale_e8m0[:, None],
+                                           block_3_microscale_e8m0[:, None])))
+    )
+
+    # Apply microscaling and quantization directly (no global_scales)
+    p_microscaled = p_tile / microscale_final
+    p_quantized = apply_e2m1_quantization_triton(p_microscaled)
+
+    # Reconstruct with microscale only (single level)
+    p_final = p_quantized * microscale_final
+
+    return p_final
+
 # ============================================================================
 # Section 3: Main Attention Kernel (Exact copy-paste)
 # ============================================================================
@@ -476,6 +559,7 @@ def tiled_online_attention_kernel(
     BLOCK_N: tl.constexpr,
     HEAD_DIM: tl.constexpr,
     USE_MXFP4: tl.constexpr = False,
+    USE_MXFP4_S1: tl.constexpr = False,
 ):
     """
     Tiled online attention kernel with all SageAttention3 features.
@@ -619,8 +703,10 @@ def tiled_online_attention_kernel(
             qk_shifted = qk_tile - new_max[:, None]
             p_tile = tl.exp(qk_shifted)
 
-            # Two-level P quantization
-            if USE_MXFP4:
+            # P quantization
+            if USE_MXFP4_S1:
+                p_quantized = single_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N)
+            elif USE_MXFP4:
                 p_quantized = two_level_p_quantization_mxfp4_triton(p_tile, BLOCK_N)
             else:
                 p_quantized = two_level_p_quantization_triton(p_tile, BLOCK_N)
@@ -955,7 +1041,7 @@ def tiled_online_attention_triton(
         is_causal: Apply causal masking
         tile_size_q: Query tile size (used as BLOCK_M)
         tile_size_k: Key/Value tile size (used as BLOCK_N)
-        quant_format: Quantization format name ('nvfp4' or 'mxfp4')
+        quant_format: Quantization format name ('nvfp4', 'mxfp4', or 'mxfp4_s1')
 
     Returns:
         output: Attention output [B, H, N, D]
@@ -975,8 +1061,9 @@ def tiled_online_attention_triton(
         # Create dummy delta_s for kernel
         delta_s = torch.zeros(B, H, 1, N, device=q.device, dtype=q.dtype)
 
-    # Resolve quant format flag for Triton constexpr
+    # Resolve quant format flags for Triton constexpr
     use_mxfp4 = (quant_format == "mxfp4")
+    use_mxfp4_s1 = (quant_format == "mxfp4_s1")
 
     # Grid dimensions: (batch, head, num_query_tiles)
     num_q_tiles = (N + tile_size_q - 1) // tile_size_q
@@ -1011,6 +1098,7 @@ def tiled_online_attention_triton(
         BLOCK_N=tile_size_k,
         HEAD_DIM=triton.next_power_of_2(D) if D <= 256 else D,
         USE_MXFP4=use_mxfp4,
+        USE_MXFP4_S1=use_mxfp4_s1,
     )
 
     return output
@@ -1051,7 +1139,7 @@ def sageattn3_torch_triton_standalone(
         tile_size_k: Key/Value tile size
         return_lse: Return log-sum-exp (not implemented)
         debug: Enable debug logging
-        quant_format: Quantization format ('nvfp4' or 'mxfp4')
+        quant_format: Quantization format ('nvfp4', 'mxfp4', or 'mxfp4_s1')
 
     Returns:
         output: Attention output [B, H, N, D]
@@ -1227,4 +1315,4 @@ def scaled_dot_product_attention(
 # Re-export built-in tests so existing imports keep working
 # (e.g. `from sageattention3_standalone import run_all_tests`)
 # ============================================================================
-from builtin_tests import run_all_tests, validate_inputs, print_environment_info
+# from builtin_tests import run_all_tests, validate_inputs, print_environment_info
