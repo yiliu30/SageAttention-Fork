@@ -320,6 +320,73 @@ def test_mxfp4_accuracy(results: TestResults):
             results.add_result(f"Accuracy: {description}", False, str(e))
 
 
+def test_mxfp8_s1_accuracy(results: TestResults):
+    """Test MXFP8_S1 accuracy against PyTorch SDPA.
+
+    MXFP8_S1 uses block_size=32 with E8M0 (power-of-2) scales and E4M3 data
+    quantization (fp_max=448), single-level P quantization only (no global
+    FP32 row scale). Expected accuracy is comparable to or better than MXFP4
+    due to higher data precision (FP8 vs FP4).
+    """
+    test_cases = [
+        # (B, H, N, D, is_causal, description)
+        (1, 1, 32, 16, False, "MXFP8_S1 Minimal Non-Causal"),
+        (1, 8, 64, 32, False, "MXFP8_S1 Small Non-Causal"),
+        (2, 4, 128, 64, False, "MXFP8_S1 Medium Non-Causal"),
+        (2, 4, 128, 64, True, "MXFP8_S1 Medium Causal"),
+    ]
+
+    for B, H, N, D, is_causal, description in test_cases:
+        try:
+            log_verbose(f"Testing MXFP8_S1 accuracy: {description} [{B}×{H}×{N}×{D}]")
+
+            torch.manual_seed(42)
+            q = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+            k = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+            v = torch.randn(B, H, N, D, dtype=TEST_DTYPE, device=TEST_DEVICE)
+
+            # Get PyTorch SDPA reference
+            with torch.no_grad():
+                ref_output = F.scaled_dot_product_attention(q, k, v, is_causal=is_causal)
+
+            # Get SageAttention3 output with MXFP8_S1
+            with torch.no_grad():
+                sage_output = scaled_dot_product_attention(
+                    q, k, v, is_causal=is_causal, quant_format="mxfp8_s1"
+                )
+
+            # Compute metrics
+            ref_flat = ref_output.flatten().float()
+            sage_flat = sage_output.flatten().float()
+
+            cos_sim = F.cosine_similarity(ref_flat.unsqueeze(0), sage_flat.unsqueeze(0)).item()
+            l2_error = torch.norm(ref_flat - sage_flat) / torch.norm(ref_flat)
+
+            log_verbose(f"  Cosine similarity: {cos_sim:.6f}")
+            log_verbose(f"  L2 relative error: {l2_error:.6f}")
+
+            # Conservative thresholds for MXFP8_S1
+            cos_sim_threshold = 0.85  # 85% similarity
+            l2_threshold = 0.3        # 30% relative error
+
+            if cos_sim >= cos_sim_threshold and l2_error <= l2_threshold:
+                results.add_result(
+                    f"Accuracy: {description}",
+                    True,
+                    f"cos_sim={cos_sim:.4f}, l2_err={l2_error:.4f}"
+                )
+            else:
+                results.add_result(
+                    f"Accuracy: {description}",
+                    False,
+                    f"cos_sim={cos_sim:.4f} (need >{cos_sim_threshold}), "
+                    f"l2_err={l2_error:.4f} (need <{l2_threshold})"
+                )
+
+        except Exception as e:
+            results.add_result(f"Accuracy: {description}", False, str(e))
+
+
 # ============================================================================
 # Performance Tests
 # ============================================================================
@@ -592,6 +659,10 @@ def main():
     print("\n[MXFP4 Accuracy Tests]")
     print("-" * 50)
     test_mxfp4_accuracy(results)
+
+    print("\n[MXFP8_S1 Accuracy Tests]")
+    print("-" * 50)
+    test_mxfp8_s1_accuracy(results)
 
     if args.performance and TEST_DEVICE == 'cuda':
         print("\n[Performance Tests]")

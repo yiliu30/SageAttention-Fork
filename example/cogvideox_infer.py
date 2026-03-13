@@ -110,6 +110,7 @@ def parse_args():
             "sage3_standalone",
             "sage3_standalone_mxfp4",
             "sage3_standalone_mxfp4_s1",
+            "sage3_standalone_mxfp8_s1",
             "fa3",
             "fa3_fp8",
         ],
@@ -154,10 +155,12 @@ if __name__ == "__main__":
             os.environ['SAGE3_DEBUG'] = '0'  # Disable debug by default for performance
         if 'SAGE3_BENCHMARK' not in os.environ:
             os.environ['SAGE3_BENCHMARK'] = '1' if args.proportion else '0'  # Enable benchmarking in proportion mode
-        if "mxfp4" in args.attention_type:
-            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4'
-        if "mxfp4_s1" in args.attention_type:
+        if "mxfp8_s1" in args.attention_type:
+            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp8_s1'
+        elif "mxfp4_s1" in args.attention_type:
             os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4_s1'
+        elif "mxfp4" in args.attention_type:
+            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4'
         from sageattention3_standalone import scaled_dot_product_attention
         print(f"✅ Using SageAttention3 Standalone implementation")
         print(f"   Location: {standalone_path}")
