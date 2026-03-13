@@ -20,11 +20,12 @@ cd "$SCRIPT_DIR"
 
 THRESHOLD="${PSNR_THRESHOLD:-20}"
 COS_THRESH="${COS_THRESHOLD:-0.95}"
-NFRAMES="${NUM_FRAMES:-49}"
+NFRAMES="${NUM_FRAMES:-1}"
 
 MODEL="cogvideox-2b"
 REF_TYPE="sage3"
 TEST_TYPE="sage3_standalone"
+TEST_TYPE="sage3_standalone_mxfp8_s1"
 
 REF_FRAME="videos/${MODEL}/smoke/quick_e2e_${REF_TYPE}/0_frames/frame_000.png"
 TEST_FRAME="videos/${MODEL}/smoke/quick_e2e_${TEST_TYPE}/0_frames/frame_000.png"
@@ -38,22 +39,22 @@ echo " CosSim thresh: ${COS_THRESH}"
 echo "========================================"
 echo
 
-# ── Step 1: Generate reference frame ────────────────────────────
-echo "[1/3] Generating ${REF_TYPE} (CUTE kernel) reference frame..."
-python cogvideox_infer.py \
-    --model "$MODEL" \
-    --attention_type "$REF_TYPE" \
-    -q -i -n "$NFRAMES"
-echo "     -> ${REF_FRAME}"
-echo
-
-# ── Step 2: Generate test frame ─────────────────────────────────
-echo "[2/3] Generating ${TEST_TYPE} (triton kernel) frame..."
+# ── Step 1: Generate test frame ─────────────────────────────────
+echo "[1/3] Generating ${TEST_TYPE} (triton kernel) frame..."
 python cogvideox_infer.py \
     --model "$MODEL" \
     --attention_type "$TEST_TYPE" \
     -q -i -n "$NFRAMES"
 echo "     -> ${TEST_FRAME}"
+echo
+
+# ── Step 2: Generate reference frame ────────────────────────────
+echo "[2/3] Generating ${REF_TYPE} (CUTE kernel) reference frame..."
+python cogvideox_infer.py \
+    --model "$MODEL" \
+    --attention_type "$REF_TYPE" \
+    -q -i -n "$NFRAMES"
+echo "     -> ${REF_FRAME}"
 echo
 
 # ── Step 3: Compare ─────────────────────────────────────────────

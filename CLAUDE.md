@@ -82,6 +82,8 @@ python cogvideox_infer.py --model cogvideox-2b --attention_type sage3 -q -i -n 1
 ```
 - triton kernel
 ```bash
+# Generate one image
+python cogvideox_infer.py --model cogvideox-2b --attention_type [attention_type] -q -i -n 1
 python cogvideox_infer.py --model cogvideox-2b --attention_type sage3_standalone -q -i -n 1
 ```
 
