@@ -18,6 +18,7 @@ All experiments run on **NVIDIA B200**, CogVideoX-2b, seed=42, 1 frame.
 | `step_sweep.py` | Validate if 5-step proxy is representative of 10/20/50 | 5,10,20,50 | `step_sweep_results.json` |
 | `layer_skip.py` | SDPA fallback on worst **layers** to recover accuracy | 5 | `layer_skip_results.json` |
 | `step_skip.py` | SDPA fallback on worst **steps** to recover accuracy | 20 | `step_skip_results.json` |
+| `format_escalation.py` | Three-tier FP4→FP8→SDPA step routing | 20 | `format_escalation_results.json` |
 
 ---
 
@@ -117,6 +118,66 @@ Skipping 5/20 steps (25% SDPA) brings mxfp4_s1 from 9.6 dB to 18.4 dB, nearly
 matching nvfp4's 5-step baseline (20.6 dB). The cost: 25% of steps run at SDPA
 speed instead of quantized kernel speed.
 
+### 6. Format Escalation — Three-Tier Routing Beats Binary Skip
+
+**Idea**: Instead of binary skip (FP4 or SDPA), use a three-tier routing:
+- **Critical steps** → SDPA (full precision)
+- **Moderate steps** → MXFP8_S1 (nearly lossless, faster than SDPA)
+- **Easy steps** → FP4 (fastest)
+
+Step rankings from Phase 1 profiling determine which steps get which tier.
+
+**Results** (20-step CogVideoX-2b):
+
+#### nvfp4
+
+| Config | SDPA | FP8 | FP4 | SNR (dB) | CosSim | vs baseline |
+|--------|------|-----|-----|----------|--------|-------------|
+| baseline | 0 | 0 | 20 | 13.56 | 0.9778 | — |
+| escalate_1_2 | 1 | 2 | 17 | 16.82 | 0.9896 | +3.26 dB |
+| escalate_2_3 | 2 | 3 | 15 | 16.91 | 0.9898 | +3.35 dB |
+| escalate_3_5 | 3 | 5 | 12 | **21.80** | **0.9967** | **+8.24 dB** |
+| step_skip_5 (binary) | 5 | 0 | 15 | 17.48 | 0.9911 | +3.92 dB |
+
+#### mxfp4
+
+| Config | SDPA | FP8 | FP4 | SNR (dB) | CosSim | vs baseline |
+|--------|------|-----|-----|----------|--------|-------------|
+| baseline | 0 | 0 | 20 | 9.80 | 0.9472 | — |
+| escalate_1_2 | 1 | 2 | 17 | 16.63 | 0.9891 | +6.83 dB |
+| escalate_2_3 | 2 | 3 | 15 | 17.87 | 0.9918 | +8.07 dB |
+| escalate_3_5 | 3 | 5 | 12 | **18.47** | **0.9929** | **+8.67 dB** |
+| step_skip_5 (binary) | 5 | 0 | 15 | 17.18 | 0.9904 | +7.38 dB |
+
+#### mxfp4_s1
+
+| Config | SDPA | FP8 | FP4 | SNR (dB) | CosSim | vs baseline |
+|--------|------|-----|-----|----------|--------|-------------|
+| baseline | 0 | 0 | 20 | 9.61 | 0.9446 | — |
+| escalate_1_2 | 1 | 2 | 17 | 13.25 | 0.9761 | +3.64 dB |
+| escalate_2_3 | 2 | 3 | 15 | 18.94 | 0.9936 | +9.33 dB |
+| escalate_3_5 | 3 | 5 | 12 | **20.02** | **0.9950** | **+10.41 dB** |
+| step_skip_5 (binary) | 5 | 0 | 15 | 18.41 | 0.9928 | +8.80 dB |
+
+#### Key takeaway: Escalation outperforms binary skip with fewer SDPA calls
+
+`escalate_3_5` uses only **3 SDPA steps** (vs 5 for binary skip) yet achieves higher SNR:
+
+| Format | escalate_3_5 SNR | step_skip_5 SNR | Δ (escalation wins) |
+|--------|-----------------|-----------------|---------------------|
+| nvfp4 | **21.80 dB** | 17.48 dB | **+4.32 dB** |
+| mxfp4 | **18.47 dB** | 17.18 dB | **+1.29 dB** |
+| mxfp4_s1 | **20.02 dB** | 18.41 dB | **+1.61 dB** |
+
+**Why it works**: The FP8 moderate tier (MXFP8_S1 at 0.9985 CosSim) prevents error
+accumulation on "moderately sensitive" steps far better than FP4 would, while being
+much faster than SDPA. Even `escalate_1_2` (just 1 SDPA + 2 FP8) recovers +3–7 dB —
+the FP8 tier does most of the heavy lifting.
+
+**Practical implication**: A production deployment could use `escalate_3_5` to get
+near-SDPA quality (21.8 dB for nvfp4) while running only 3/20 steps at SDPA speed,
+5/20 at FP8 speed, and 12/20 at FP4 speed.
+
 ---
 
 ## Related Work
@@ -193,7 +254,7 @@ https://arxiv.org/abs/2312.09571
 | Step sensitivity | TDQ/MixDQ: dynamic quant params per step | Direct **marginal per-step error** measurement; step-skip recovers up to +8.8 dB |
 | Layer sensitivity | MixDQ/EfficientDM: per-layer bit allocation | CogVideoX-specific profiling of 30 transformer blocks |
 | Video models | ViDiT-Q targets video DiTs | CogVideoX-2b end-to-end validation with latent divergence metrics |
-| Key finding | N/A | **Step-skip >> layer-skip** for FP4 attention (6-15x more effective) |
+| Key finding | N/A | **Step-skip >> layer-skip** for FP4 attention (6-15x more effective); **Format escalation** (FP4→FP8→SDPA) beats binary skip by +1.3–4.3 dB with fewer SDPA calls |
 
 ---
 
@@ -212,8 +273,12 @@ python layer_skip.py --output-json layer_skip_results.json
 # Step skip — SDPA fallback on worst steps (20 steps)
 python step_skip.py --output-json step_skip_results.json
 
+# Format escalation — three-tier FP4→FP8→SDPA routing (20 steps)
+python format_escalation.py --output-json format_escalation_results.json
+
 # Quick tests
 python step_skip.py --phases 1 --formats nvfp4          # Phase 1 only, 1 format
 python layer_skip.py --formats nvfp4                     # 1 format
+python format_escalation.py --formats nvfp4               # 1 format
 python ablation.py --parts A                             # synthetic only (no model)
 ```
