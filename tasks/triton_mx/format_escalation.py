@@ -71,6 +71,11 @@ ESCALATION_CONFIGS = {
     "escalate_2_3":   (2, 3),   # 2 critical, 3 moderate
     "escalate_3_5":   (3, 5),   # 3 critical, 5 moderate
     "step_skip_5":    (5, 0),   # 5 critical, 0 moderate -- binary skip reference
+    # Scaled for 50-step runs (matching ~25-40% coverage that worked at 20 steps)
+    "escalate_5_8":   (5, 8),   # 5 SDPA + 8 FP8 = 26% non-FP4
+    "escalate_5_13":  (5, 13),  # 5 SDPA + 13 FP8 = 36% non-FP4
+    "escalate_8_12":  (8, 12),  # 8 SDPA + 12 FP8 = 40% non-FP4 (matches 3_5 at 20 steps)
+    "step_skip_13":   (13, 0),  # 13 SDPA binary = 26% (matches skip_5 at 20 steps)
 }
 
 
