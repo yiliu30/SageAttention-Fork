@@ -113,6 +113,7 @@ def parse_args():
             "sage3_standalone_mxfp8_s1",
             "fa3",
             "fa3_fp8",
+            "escalate",
         ],
         help="Attention type",
     )
@@ -174,6 +175,37 @@ if __name__ == "__main__":
     elif args.attention_type == 'fa3_fp8':
         from sageattention.fa3_wrapper import fa3_fp8
         F.scaled_dot_product_attention = fa3_fp8
+    elif args.attention_type == 'escalate':
+        from sageattention3_standalone import scaled_dot_product_attention as sage_sdpa
+        import functools
+
+        orig_sdpa = F.scaled_dot_product_attention  # save SDPA reference
+
+        fp4_fn = functools.partial(sage_sdpa, quant_format="mxfp4")
+        fp8_fn = functools.partial(sage_sdpa, quant_format="mxfp8_s1")
+
+        # escalate_8_12: 8 SDPA + 12 FP8 + 30 FP4 (worst steps from 50-step profiling)
+        worst_steps = [6, 2, 1, 4, 5, 8, 7, 9, 3, 10, 11, 14, 15, 13, 12, 16, 17, 18, 19, 49]
+        critical_steps = set(worst_steps[:8])   # 8 worst -> SDPA
+        moderate_steps = set(worst_steps[8:20]) # next 12 -> FP8
+
+        calls_per_step = 30  # CogVideoX-2b: 30 attention calls per step
+
+        escalation_call_count = [0]  # use list for mutability in closure
+        def escalation_attn(*args_inner, **kwargs_inner):
+            step_idx = escalation_call_count[0] // calls_per_step
+            escalation_call_count[0] += 1
+            if step_idx in critical_steps:
+                return orig_sdpa(*args_inner, **kwargs_inner)
+            elif step_idx in moderate_steps:
+                return fp8_fn(*args_inner, **kwargs_inner)
+            return fp4_fn(*args_inner, **kwargs_inner)
+
+        F.scaled_dot_product_attention = escalation_attn
+        print(f"✅ Using Escalation attention (escalate_8_12)")
+        print(f"   8 SDPA steps: {sorted(critical_steps)}")
+        print(f"   12 FP8 steps: {sorted(moderate_steps)}")
+        print(f"   30 FP4 steps: remaining")
 
     # Wrap attention with record_function + NVTX for torch profiler / nsight
     if args.profile:
@@ -387,6 +419,9 @@ if __name__ == "__main__":
         desc=f"Generating videos for {args.model} with {args.attention_type} attention",
     ):
         global_i = args.start + local_i
+        # Reset escalation counter for each video
+        if args.attention_type == 'escalate':
+            escalation_call_count[0] = 0
         video = pipe(
             prompt=prompt,
             num_videos_per_prompt=1,
