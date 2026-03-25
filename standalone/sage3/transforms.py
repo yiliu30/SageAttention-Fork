@@ -28,7 +28,6 @@ class TransformContext:
     (e.g., delta_s from smoothing, v_mean from V-smoothing).
     """
     delta_s: Optional[torch.Tensor] = None
-    original_seq_len: Optional[int] = None
     v_mean: Optional[torch.Tensor] = None
 
 
@@ -61,7 +60,6 @@ def qk_smoothing(
     The delta_s correction is added back during attention to maintain equivalence.
     """
     B, H, N, D = q.shape
-    ctx.original_seq_len = N
 
     # Step 1: K centering (lossless)
     k_centered = k - k.mean(dim=-2, keepdim=True)

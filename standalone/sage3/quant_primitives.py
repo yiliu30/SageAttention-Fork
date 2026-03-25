@@ -130,7 +130,7 @@ def round_to_e8m0_triton(scale):
     """
     scale_type = scale.dtype
     abs_scale = tl.abs(scale)
-    log2_scale = tl.log2(tl.maximum(abs_scale, 5.88e-39))  # 2^-127
+    log2_scale = tl.log2(tl.maximum(abs_scale, 1.7014118346e-38))  # MIN_SUBNORMAL = 2**-127
     rounded = tl.ceil(log2_scale)
     rounded = tl.maximum(tl.minimum(rounded, 127.0), -127.0)
     return tl.exp2(rounded).to(scale_type)

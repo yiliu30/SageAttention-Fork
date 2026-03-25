@@ -151,14 +151,19 @@ def tiled_online_attention_kernel(
 
 ### Pre-Transform Pipeline
 
-Each transform is a function with signature `(q, k, v, ctx) → (q, k, v, ctx)`. The `ctx` dict carries metadata between transforms and to the kernel launcher (e.g., `delta_s` from smoothing, `v_mean` from V-smoothing).
+Each transform is a function with signature `(q, k, v, ctx) → (q, k, v, ctx)`. The `ctx` is a typed `TransformContext` dataclass that carries metadata between transforms and to the kernel launcher (e.g., `delta_s` from smoothing, `v_mean` from V-smoothing).
 
 ```python
+@dataclass
+class TransformContext:
+    delta_s: Optional[torch.Tensor] = None
+    v_mean: Optional[torch.Tensor] = None
+
 def qk_smoothing(q, k, v, ctx):
     """Subtract K's mean to reduce outlier impact."""
     k_mean = k.mean(dim=-2, keepdim=True)
     k = k - k_mean
-    ctx["delta_s"] = compute_delta_s(q, k_mean)
+    ctx.delta_s = compute_delta_s(q, k_mean)
     return q, k, v, ctx
 
 def hadamard_rotation(q, k, v, ctx):

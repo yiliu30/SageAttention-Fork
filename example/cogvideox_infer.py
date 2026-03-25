@@ -179,12 +179,9 @@ if __name__ == "__main__":
             os.environ['SAGE3_DEBUG'] = '0'
         if 'SAGE3_BENCHMARK' not in os.environ:
             os.environ['SAGE3_BENCHMARK'] = '1' if args.proportion else '0'
-        if "mxfp8_s1" in args.attention_type:
-            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp8_s1'
-        elif "mxfp4_s1" in args.attention_type:
-            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4_s1'
-        elif "mxfp4" in args.attention_type:
-            os.environ['SAGE3_QUANT_FORMAT'] = 'mxfp4'
+        if "sage3_refactored_" in args.attention_type:
+            quant_format = args.attention_type.replace("sage3_refactored_", "")
+            os.environ['SAGE3_QUANT_FORMAT'] = quant_format
         from sage3 import scaled_dot_product_attention as sage3_refactored_sdpa
         print(f"✅ Using SageAttention3 Refactored (sage3/) implementation")
         print(f"   Location: {standalone_path}/sage3/")

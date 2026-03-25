@@ -50,7 +50,7 @@ def quantize_qk(x: torch.Tensor, config: QuantConfig) -> Tuple[torch.Tensor, tor
     # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, N, num_blocks]
     scales = block_max / config.fp_max
-    scales = torch.clamp(scales, min=1e-8)
+    scales = torch.clamp(scales, min=1e-8)  # Epsilon to prevent division by zero
     scales = config.round_scale_torch(scales)
 
     # Normalize to quantization range
@@ -109,7 +109,7 @@ def quantize_v(x: torch.Tensor, config: QuantConfig) -> Tuple[torch.Tensor, torc
     # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, D, num_blocks]
     scales = block_max / config.fp_max
-    scales = torch.clamp(scales, min=1e-8)
+    scales = torch.clamp(scales, min=1e-8)  # Epsilon to prevent division by zero
     scales = config.round_scale_torch(scales)
 
     # Normalize and quantize

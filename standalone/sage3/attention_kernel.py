@@ -123,7 +123,8 @@ def tiled_online_attention_kernel(
             # Add delta_s correction if provided
             if has_delta_s:
                 # group_id = q_tile_index = pid_m (tile_size_q = GROUP_SIZE = 128)
-                group_id = (q_start) // 128 if num_groups > 1 else 0
+                GROUP_SIZE: tl.constexpr = 128
+                group_id = (q_start) // GROUP_SIZE if num_groups > 1 else 0
                 group_id = tl.minimum(group_id, num_groups - 1)
 
                 ds_ptrs = (Delta_s_ptr +
@@ -227,6 +228,13 @@ def launch_attention(
         output: Attention output [B, H, N, D]
     """
     B, H, N, D = q.shape
+
+    # P-quant kernels hardcode block boundaries for BLOCK_N=128 (e.g., cols 0-16,
+    # 16-32, ..., 112-128). Non-128 tile sizes produce silently wrong results.
+    assert tile_size_k == 128, (
+        f"P-quant kernels require tile_size_k=128, got {tile_size_k}. "
+        "Block boundaries are hardcoded in P-quant functions."
+    )
 
     output = torch.zeros_like(q)
 

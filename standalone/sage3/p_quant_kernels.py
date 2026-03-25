@@ -6,6 +6,10 @@ from quant_primitives.py, reducing the per-scheme boilerplate to the unique logi
 scale rounding method, data quantization, and single-vs-two-level factorization.
 
 All functions have the signature: (p_tile, BLOCK_N: tl.constexpr) -> p_quantized
+
+IMPORTANT: All P-quant kernels assume BLOCK_N=128. Block boundaries are hardcoded
+(e.g., 0-16, 16-32, ..., 112-128 for block_size=16; 0-32, 32-64, ..., 96-128 for
+block_size=32). The kernel launcher enforces this constraint via assertion.
 """
 
 import triton.language as tl

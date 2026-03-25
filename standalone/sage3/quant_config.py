@@ -11,7 +11,7 @@ scheme is fully described by an AttentionConfig that composes:
 
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Callable, Optional, List, TYPE_CHECKING
+from typing import Callable, Optional, Tuple, TYPE_CHECKING
 
 import triton
 
@@ -55,6 +55,22 @@ class RoundingMode(IntEnum):
 
 
 # ============================================================================
+# Enum → Torch callable dispatch tables
+# ============================================================================
+
+_SCALE_FN_BY_FORMAT = {
+    ScaleFormat.E4M3: round_to_e4m3_torch,
+    ScaleFormat.E8M0: round_to_e8m0_torch,
+    ScaleFormat.NONE: lambda x: x,
+}
+
+_DATA_FN_BY_FORMAT = {
+    DataFormat.E2M1: apply_e2m1_quantization_torch,
+    DataFormat.E4M3: apply_e4m3_quantization_torch,
+}
+
+
+# ============================================================================
 # QuantConfig — per-stage quantization configuration
 # ============================================================================
 
@@ -83,27 +99,47 @@ class QuantConfig:
 # AttentionConfig — full attention configuration
 # ============================================================================
 
-@dataclass
+@dataclass(frozen=True)
 class AttentionConfig:
     """
     Composes QK quant, PV quant, P-quant kernel, and pre-transforms.
 
     This is the single object that fully describes an attention quantization scheme.
+    Frozen to prevent accidental mutation of shared configs in the global registry.
     """
     name: str
     qk_quant: QuantConfig               # Host-side Q/K quantization config
     pv_quant: QuantConfig               # Host-side V quantization config
     p_quant_fn: triton.JITFunction      # @triton.jit function for in-kernel P quantization
-    pre_transforms: List = field(default_factory=list)  # Ordered pipeline of TransformFn
+    pre_transforms: Tuple["TransformFn", ...] = field(default_factory=tuple)
 
     def validate(self):
-        """Validate config consistency."""
+        """Validate config consistency at registration time."""
+        # Required fields
         assert self.qk_quant.round_scale_torch is not None, \
             f"{self.name}: qk_quant missing round_scale_torch"
         assert self.pv_quant.round_scale_torch is not None, \
             f"{self.name}: pv_quant missing round_scale_torch"
         assert self.p_quant_fn is not None, \
             f"{self.name}: missing p_quant_fn"
+
+        # Validate enum/callable consistency for QK
+        expected_scale_fn = _SCALE_FN_BY_FORMAT.get(self.qk_quant.scale_format)
+        if expected_scale_fn is not None:
+            assert self.qk_quant.round_scale_torch is expected_scale_fn, (
+                f"{self.name}: qk_quant.scale_format={self.qk_quant.scale_format.name} "
+                f"but round_scale_torch is {self.qk_quant.round_scale_torch.__name__}, "
+                f"expected {expected_scale_fn.__name__}"
+            )
+
+        # Validate enum/callable consistency for PV
+        expected_scale_fn = _SCALE_FN_BY_FORMAT.get(self.pv_quant.scale_format)
+        if expected_scale_fn is not None:
+            assert self.pv_quant.round_scale_torch is expected_scale_fn, (
+                f"{self.name}: pv_quant.scale_format={self.pv_quant.scale_format.name} "
+                f"but round_scale_torch is {self.pv_quant.round_scale_torch.__name__}, "
+                f"expected {expected_scale_fn.__name__}"
+            )
 
 
 # ============================================================================
@@ -138,7 +174,7 @@ def _register_builtin_configs():
         qk_quant=nvfp4_quant,
         pv_quant=nvfp4_quant,
         p_quant_fn=P_QUANT_REGISTRY["nvfp4"],
-        pre_transforms=[qk_smoothing],
+        pre_transforms=(qk_smoothing,),
     )
 
     # ── MXFP4: Two-level, E8M0 scales, block_size=32 ──
@@ -157,7 +193,7 @@ def _register_builtin_configs():
         qk_quant=mxfp4_quant,
         pv_quant=mxfp4_quant,
         p_quant_fn=P_QUANT_REGISTRY["mxfp4"],
-        pre_transforms=[qk_smoothing],
+        pre_transforms=(qk_smoothing,),
     )
 
     # ── MXFP4_S1: Single-level, E8M0 scales, block_size=32 ──
@@ -176,7 +212,7 @@ def _register_builtin_configs():
         qk_quant=mxfp4_s1_quant,
         pv_quant=mxfp4_s1_quant,
         p_quant_fn=P_QUANT_REGISTRY["mxfp4_s1"],
-        pre_transforms=[qk_smoothing],
+        pre_transforms=(qk_smoothing,),
     )
 
     # ── MXFP8_S1: Single-level, E8M0 scales, FP8 data, block_size=32 ──
@@ -195,10 +231,10 @@ def _register_builtin_configs():
         qk_quant=mxfp8_s1_quant,
         pv_quant=mxfp8_s1_quant,
         p_quant_fn=P_QUANT_REGISTRY["mxfp8_s1"],
-        pre_transforms=[qk_smoothing],
+        pre_transforms=(qk_smoothing,),
     )
 
-    # Validate all configs
+    # Validate all configs at registration time
     for config in ATTENTION_CONFIGS.values():
         config.validate()
 

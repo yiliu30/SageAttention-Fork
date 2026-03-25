@@ -89,7 +89,7 @@ def test_structural(runner: TestRunner):
     ctx = TransformContext()
     runner.add(
         "TransformContext has typed fields",
-        hasattr(ctx, 'delta_s') and hasattr(ctx, 'v_mean') and hasattr(ctx, 'original_seq_len'),
+        hasattr(ctx, 'delta_s') and hasattr(ctx, 'v_mean'),
     )
 
 

@@ -12,22 +12,30 @@ import torch
 from typing import Optional, Union
 
 from .quant_config import AttentionConfig, ATTENTION_CONFIGS
-from .transforms import TransformContext
+from .transforms import TransformContext, qk_smoothing
 from .quantize import quantize_qk, quantize_v
 from .attention_kernel import launch_attention
 
-# ── Environment variable configuration ──
+# ── Constants ──
 
-SAGE3_DEBUG = os.getenv('SAGE3_DEBUG', '0').lower() in ('1', 'true')
-SAGE3_DISABLE_PER_BLOCK_MEAN = os.getenv('SAGE3_DISABLE_PER_BLOCK_MEAN', '0').lower() in ('1', 'true')
-SAGE3_TILE_SIZE = 128
-SAGE3_BENCHMARK = os.getenv('SAGE3_BENCHMARK', '0').lower() in ('1', 'true')
-SAGE3_QUANT_FORMAT = os.getenv('SAGE3_QUANT_FORMAT', 'nvfp4').lower()
+SAGE3_TILE_SIZE = 128  # Fixed tile size — P-quant kernels require 128
+
+
+# ── Lazy environment variable helpers ──
+
+def _get_env_bool(name: str, default: str = '0') -> bool:
+    """Read a boolean env var at call time (not import time)."""
+    return os.getenv(name, default).lower() in ('1', 'true')
+
+
+def _get_env_str(name: str, default: str) -> str:
+    """Read a string env var at call time (not import time)."""
+    return os.getenv(name, default).lower()
 
 
 def debug_print(*args, **kwargs):
     """Debug print that respects SAGE3_DEBUG setting."""
-    if SAGE3_DEBUG:
+    if _get_env_bool('SAGE3_DEBUG'):
         print("[SAGE3]", *args, **kwargs)
 
 
@@ -69,14 +77,18 @@ def _run_attention(
     # Step 1: Pre-transforms pipeline
     ctx = TransformContext()
 
-    if per_block_mean and not SAGE3_DISABLE_PER_BLOCK_MEAN:
-        for transform in config.pre_transforms:
-            q, k, v, ctx = transform(q, k, v, ctx)
+    disable_per_block_mean = _get_env_bool('SAGE3_DISABLE_PER_BLOCK_MEAN')
+
+    for transform in config.pre_transforms:
+        # per_block_mean=False only skips QK smoothing, not other transforms
+        # (e.g., Hadamard rotation should still run)
+        if (not per_block_mean or disable_per_block_mean) and transform is qk_smoothing:
             if debug:
-                debug_print(f"Applied transform, delta_s: {ctx.delta_s is not None}")
-    else:
+                debug_print("Skipping QK smoothing (per_block_mean=False)")
+            continue
+        q, k, v, ctx = transform(q, k, v, ctx)
         if debug:
-            debug_print("Transforms disabled (per_block_mean=False)")
+            debug_print(f"Applied transform, delta_s: {ctx.delta_s is not None}")
 
     # Step 2: Quantize Q/K and V
     q_quant, _ = quantize_qk(q, config.qk_quant)
@@ -239,18 +251,22 @@ def scaled_dot_product_attention(
     """
     SDPA-compatible wrapper for SageAttention3 Triton implementation.
 
-    Drop-in replacement for torch.nn.functional.scaled_dot_product_attention.
+    Limitations vs torch.nn.functional.scaled_dot_product_attention:
+    - Q, K, V must have identical shapes [B, H, N, D] (no cross-attention)
+    - dropout_p is not supported (silently ignored with warning)
+    - attn_mask is not supported (silently ignored with warning)
+    - KV caching (different N for K/V) is not supported
     """
     if not query.is_cuda:
         raise RuntimeError("SageAttention3 requires CUDA tensors")
 
-    if dropout_p > 0.0 and SAGE3_DEBUG:
+    if dropout_p > 0.0:
         warnings.warn(
             f"SageAttention3 doesn't support dropout_p={dropout_p}, ignoring",
             UserWarning, stacklevel=2,
         )
 
-    if attn_mask is not None and SAGE3_DEBUG:
+    if attn_mask is not None:
         warnings.warn(
             "SageAttention3 doesn't support arbitrary attention masks, ignoring",
             UserWarning, stacklevel=2,
@@ -259,12 +275,19 @@ def scaled_dot_product_attention(
     B, H, N, D = query.shape
 
     if key.shape != (B, H, N, D):
-        raise ValueError(f"Key shape {key.shape} doesn't match query {query.shape}")
+        raise ValueError(
+            f"Key shape {key.shape} doesn't match query {query.shape}. "
+            "SageAttention3 requires identical Q/K/V shapes (no cross-attention or KV caching)."
+        )
     if value.shape != (B, H, N, D):
-        raise ValueError(f"Value shape {value.shape} doesn't match query {query.shape}")
+        raise ValueError(
+            f"Value shape {value.shape} doesn't match query {query.shape}. "
+            "SageAttention3 requires identical Q/K/V shapes (no cross-attention or KV caching)."
+        )
 
-    use_per_block_mean = not SAGE3_DISABLE_PER_BLOCK_MEAN
-    quant_format = kwargs.pop('quant_format', SAGE3_QUANT_FORMAT)
+    use_per_block_mean = not _get_env_bool('SAGE3_DISABLE_PER_BLOCK_MEAN')
+    quant_format = kwargs.pop('quant_format', _get_env_str('SAGE3_QUANT_FORMAT', 'nvfp4'))
+    debug = _get_env_bool('SAGE3_DEBUG')
 
     if quant_format not in ATTENTION_CONFIGS:
         raise ValueError(
@@ -272,25 +295,21 @@ def scaled_dot_product_attention(
             f"Available: {list(ATTENTION_CONFIGS.keys())}"
         )
 
-    try:
-        output = sageattn3_torch_triton_standalone(
-            q=query,
-            k=key,
-            v=value,
-            tensor_layout="HND",
-            is_causal=is_causal,
-            sm_scale=scale,
-            per_block_mean=use_per_block_mean,
-            tile_size_q=SAGE3_TILE_SIZE,
-            tile_size_k=SAGE3_TILE_SIZE,
-            debug=SAGE3_DEBUG,
-            quant_format=quant_format,
-        )
+    output = sageattn3_torch_triton_standalone(
+        q=query,
+        k=key,
+        v=value,
+        tensor_layout="HND",
+        is_causal=is_causal,
+        sm_scale=scale,
+        per_block_mean=use_per_block_mean,
+        tile_size_q=SAGE3_TILE_SIZE,
+        tile_size_k=SAGE3_TILE_SIZE,
+        debug=debug,
+        quant_format=quant_format,
+    )
 
-        if torch.isnan(output).any() or torch.isinf(output).any():
-            raise RuntimeError("SageAttention3 produced NaN/Inf outputs")
+    if debug and (torch.isnan(output).any() or torch.isinf(output).any()):
+        raise RuntimeError("SageAttention3 produced NaN/Inf outputs")
 
-        return output
-
-    except Exception as e:
-        raise RuntimeError(f"SageAttention3 failed: {e}") from e
+    return output
