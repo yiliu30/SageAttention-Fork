@@ -11,8 +11,11 @@
 | Pipeline total (ms) | 68,464 | 52,357 | **1.31×** |
 | Transformer total (ms) | 63,462 | 47,426 | **1.34×** |
 | Per-step latency (ms) | 1,269 | 949 | **1.34×** |
+| Attention kernel (ms) | 32,444 | 16,581 | **1.96×** |
+| **Attn / Pipeline** | **47.4%** | **31.7%** | — |
+| **Attn / Transformer** | **51.1%** | **35.0%** | — |
 
-SageAttention3 delivers a **1.31× end-to-end speedup** by cutting attention kernel time in half.
+SageAttention3 delivers a **1.31× end-to-end speedup** by cutting attention kernel time in half. Attention drops from **47.4%** to **31.7%** of total pipeline time.
 
 ### Where the Time Goes
 
