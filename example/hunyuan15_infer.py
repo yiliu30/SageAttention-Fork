@@ -48,8 +48,16 @@ def parse_args():
         help="Attention type",
     )
     parser.add_argument(
+        "--no_mask", action="store_true",
+        help="Strip attention mask from dispatch (for fair SDPA vs sage3 comparison)",
+    )
+    parser.add_argument(
         "-i", "--save_frames", action="store_true",
         help="Save individual frames as PNG images",
+    )
+    parser.add_argument(
+        "--device_map", type=str, default=None,
+        help="Device map for multi-GPU (e.g. 'balanced'). Disables CPU offload.",
     )
     parser.add_argument("--start", type=int, default=0, help="Starting prompt id of this run.")
     parser.add_argument("--end", type=int, default=None, help="Ending prompt id of this run.")
@@ -108,6 +116,21 @@ if __name__ == "__main__":
         from sageattn3 import sageattn3_blackwell
         _orig_dispatch, _sage3_dispatch = _patch_dispatch_attention(sageattn3_blackwell)
         print(f"✅ Using SageAttention3 (CUTE kernel) via dispatch_attention_fn patch")
+
+    # Strip attention mask so SDPA can use FlashAttention (fair kernel comparison)
+    if args.no_mask:
+        import diffusers.models.attention_dispatch as _attn_dispatch_module
+        import diffusers.models.transformers.transformer_hunyuan_video as _hvt_module
+        import diffusers.models.transformers.transformer_hunyuan_video15 as _hvt15_module
+        _current_fn = _attn_dispatch_module.dispatch_attention_fn
+        def _no_mask_dispatch(*args_inner, **kwargs_inner):
+            kwargs_inner.pop("attn_mask", None)
+            kwargs_inner.pop("attention_mask", None)
+            return _current_fn(*args_inner, **kwargs_inner)
+        _attn_dispatch_module.dispatch_attention_fn = _no_mask_dispatch
+        _hvt_module.dispatch_attention_fn = _no_mask_dispatch
+        _hvt15_module.dispatch_attention_fn = _no_mask_dispatch
+        print(f"✅ Attention mask stripped (--no_mask) for fair kernel comparison")
 
     # Wrap attention with proportion profiler if requested
     attn_profiler = None
@@ -174,7 +197,10 @@ if __name__ == "__main__":
     selected_prompts = [p.strip() for p in prompts[args.start:end]]
 
     # --- Pipeline loading ---
-    pipe = HunyuanVideo15Pipeline.from_pretrained(model_path, torch_dtype=torch_dtype)
+    load_kwargs = dict(torch_dtype=torch_dtype)
+    if args.device_map:
+        load_kwargs["device_map"] = args.device_map
+    pipe = HunyuanVideo15Pipeline.from_pretrained(model_path, **load_kwargs)
 
     if args.compile:
         pipe.transformer = torch.compile(pipe.transformer, mode="max-autotune-no-cudagraphs")
@@ -193,12 +219,7 @@ if __name__ == "__main__":
         if args.num_frames is not None:
             num_frames = args.num_frames
 
-    if not args.profile and not args.proportion:
-        pipe.enable_model_cpu_offload()
-    else:
-        # For profiling: use model_cpu_offload (sequential offload) since the
-        # full pipeline doesn't fit in 32GB VRAM. The transformer is moved to
-        # GPU on demand, so transformer-level timing is still accurate.
+    if not args.device_map:
         pipe.enable_model_cpu_offload()
     pipe.vae.enable_slicing()
     pipe.vae.enable_tiling()
@@ -335,8 +356,7 @@ if __name__ == "__main__":
         del video
         gc.collect()
         torch.cuda.empty_cache()
-
-    # --- Normal generation loop ---
+        sys.exit(0)
     for local_i, prompt in tqdm(
         enumerate(selected_prompts),
         total=len(selected_prompts),
