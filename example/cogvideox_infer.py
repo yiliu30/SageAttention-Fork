@@ -272,6 +272,7 @@ if __name__ == "__main__":
         del video
         gc.collect()
         torch.cuda.empty_cache()
+        sys.exit(0)
 
     if args.proportion:
         prompt = selected_prompts[0]

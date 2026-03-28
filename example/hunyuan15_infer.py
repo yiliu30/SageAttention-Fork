@@ -87,7 +87,7 @@ def _patch_dispatch_attention(sage3_fn):
         q = query.permute(0, 2, 1, 3).contiguous()
         k = key.permute(0, 2, 1, 3).contiguous()
         v = value.permute(0, 2, 1, 3).contiguous()
-        out = sage3_fn(q, k, v, is_causal=is_causal)
+        out = sage3_fn(q, k, v, is_causal=is_causal, scale=scale)
         # Output: [B, H, N, D] -> back to [B, N, H, D]
         return out.permute(0, 2, 1, 3)
 
@@ -126,6 +126,9 @@ if __name__ == "__main__":
         def _no_mask_dispatch(*args_inner, **kwargs_inner):
             kwargs_inner.pop("attn_mask", None)
             kwargs_inner.pop("attention_mask", None)
+            # Also strip positional attn_mask (4th arg) if present
+            if len(args_inner) > 3:
+                args_inner = args_inner[:3] + args_inner[4:]
             return _current_fn(*args_inner, **kwargs_inner)
         _attn_dispatch_module.dispatch_attention_fn = _no_mask_dispatch
         _hvt_module.dispatch_attention_fn = _no_mask_dispatch
@@ -277,6 +280,7 @@ if __name__ == "__main__":
         del video
         gc.collect()
         torch.cuda.empty_cache()
+        sys.exit(0)
 
     # --- Proportion mode ---
     if args.proportion:
