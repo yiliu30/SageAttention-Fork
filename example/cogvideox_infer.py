@@ -111,6 +111,10 @@ def parse_args():
             "sage3_standalone_mxfp4",
             "sage3_standalone_mxfp4_s1",
             "sage3_standalone_mxfp8_s1",
+            "sage3_refactored",
+            "sage3_refactored_mxfp4",
+            "sage3_refactored_mxfp4_s1",
+            "sage3_refactored_mxfp8_s1",
             "fa3",
             "fa3_fp8",
             "escalate",
@@ -169,6 +173,22 @@ if __name__ == "__main__":
         print(f"   Environment: SAGE3_DEBUG={os.environ.get('SAGE3_DEBUG')}, SAGE3_BENCHMARK={os.environ.get('SAGE3_BENCHMARK')}")
         print(f"   Quantization Format: {os.environ.get('SAGE3_QUANT_FORMAT', 'nvfp4').upper()}")
         F.scaled_dot_product_attention = scaled_dot_product_attention
+    elif "sage3_refactored" in args.attention_type:
+        # Refactored sage3 package (composable architecture)
+        if 'SAGE3_DEBUG' not in os.environ:
+            os.environ['SAGE3_DEBUG'] = '0'
+        if 'SAGE3_BENCHMARK' not in os.environ:
+            os.environ['SAGE3_BENCHMARK'] = '1' if args.proportion else '0'
+        if "sage3_refactored_" in args.attention_type:
+            quant_format = args.attention_type.replace("sage3_refactored_", "")
+            os.environ['SAGE3_QUANT_FORMAT'] = quant_format
+        from sage3 import scaled_dot_product_attention as sage3_refactored_sdpa
+        print(f"✅ Using SageAttention3 Refactored (sage3/) implementation")
+        print(f"   Location: {standalone_path}/sage3/")
+        print(f"   Features: Composable QuantConfig, zero-dispatch P-quant, pre-transform pipeline")
+        print(f"   Environment: SAGE3_DEBUG={os.environ.get('SAGE3_DEBUG')}, SAGE3_BENCHMARK={os.environ.get('SAGE3_BENCHMARK')}")
+        print(f"   Quantization Format: {os.environ.get('SAGE3_QUANT_FORMAT', 'nvfp4').upper()}")
+        F.scaled_dot_product_attention = sage3_refactored_sdpa
     elif args.attention_type == 'fa3':
         from sageattention.fa3_wrapper import fa3
         F.scaled_dot_product_attention = fa3
