@@ -174,8 +174,12 @@ def tiled_online_attention_kernel(
             # PV computation
             pv_tile = tl.dot(p_quantized, v_tile, out_dtype=tl.float32)
 
-            # Update running statistics
-            tile_sum = tl.sum(p_quantized, axis=1)
+            # Update running statistics.
+            #
+            # Denominator uses the pre-P-quant softmax tile to match the CUTE/
+            # Blackwell kernel semantics. The numerator path (PV) still uses the
+            # quantized-and-reconstructed probabilities.
+            tile_sum = tl.sum(p_tile, axis=1)
             running_sum = running_sum * alpha + tile_sum
             running_max = new_max
 

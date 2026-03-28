@@ -6,16 +6,15 @@ For each quant format (nvfp4, mxfp4, mxfp4_s1, mxfp8_s1), generates one frame
 with the original sageattention3_standalone.py and one with the sage3/ package,
 then compares the outputs at the pixel level.
 
-The two implementations produce bitwise-identical attention tensors when called
-directly. However, they compile to separate Triton binaries (different JIT cache
-keys due to different Python modules), which can produce 1-ULP fp16 differences
-on ~0.0005% of elements. Over multiple diffusion steps, these compound into
-visible pixel differences — this is expected floating-point non-determinism.
+The refactored package intentionally diverges from the original monolith for
+`nvfp4` and `mxfp4` after RFC #8, so monolith-vs-refactored image similarity is
+informational only for those two formats. The monolith remains the reference for
+`mxfp4_s1` and `mxfp8_s1`, where direct parity is still expected aside from
+minor Triton compilation non-determinism.
 
 Expected results:
-  - NVFP4: PSNR=inf (exact match — both share the same nvfp4 kernel path)
-  - MXFP4/MXFP4_S1/MXFP8_S1: PSNR ~25-40 dB (1-ULP Triton compilation differences)
-  - All formats: Cosine similarity > 0.995
+  - NVFP4/MXFP4: informational comparison only (expected to differ from monolith)
+  - MXFP4_S1/MXFP8_S1: PSNR ~25-40 dB and CosSim > 0.995
 
 Usage:
     cd example
@@ -192,6 +191,7 @@ def main():
 
     results = {}
     all_passed = True
+    info_only_formats = {"nvfp4", "mxfp4"}
 
     for i, fmt in enumerate(args.formats, 1):
         print(f"[{i}/{len(args.formats)}] Testing format: {fmt}")
@@ -232,9 +232,12 @@ def main():
             (metrics["psnr"] >= args.psnr_threshold or metrics["psnr"] == float("inf"))
             and metrics["cos_sim"] >= args.cos_threshold
         )
-        status = "✅ PASS" if passed else "❌ FAIL"
-        if not passed:
-            all_passed = False
+        if fmt in info_only_formats:
+            status = "ℹ️ INFO"
+        else:
+            status = "✅ PASS" if passed else "❌ FAIL"
+            if not passed:
+                all_passed = False
 
         print(f"  {status}")
         print(f"    PSNR             : {metrics['psnr']:.2f} dB")
@@ -242,6 +245,8 @@ def main():
         print(f"    MSE              : {metrics['mse']:.4f}")
         print(f"    Max Abs Diff     : {metrics['max_abs_diff']:.1f}")
         print(f"    Mean Abs Diff    : {metrics['mean_abs_diff']:.4f}")
+        if fmt in info_only_formats:
+            print("    Note             : informational only after RFC #8 denominator change")
 
         # Save images if requested
         if args.save_images:
@@ -264,7 +269,10 @@ def main():
             (m["psnr"] >= args.psnr_threshold or m["psnr"] == float("inf"))
             and m["cos_sim"] >= args.cos_threshold
         )
-        status = "PASS" if passed else "FAIL"
+        if fmt in info_only_formats:
+            status = "INFO"
+        else:
+            status = "PASS" if passed else "FAIL"
         print(f"{fmt:<12} {psnr_str:>10} {m['cos_sim']:>12.8f} {m['max_abs_diff']:>10.1f} {m['mean_abs_diff']:>10.4f} {status:>8}")
     print("-" * 70)
 
