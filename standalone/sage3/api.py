@@ -129,7 +129,9 @@ def _run_attention(
         output = output.to(q.dtype)
 
     if return_lse:
-        return output, None
+        raise NotImplementedError(
+            "return_lse is not yet supported by the sage3 composable implementation"
+        )
     return output
 
 

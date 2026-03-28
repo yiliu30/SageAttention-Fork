@@ -122,7 +122,8 @@ def tiled_online_attention_kernel(
 
             # Add delta_s correction if provided
             if has_delta_s:
-                # group_id = q_tile_index = pid_m (tile_size_q = GROUP_SIZE = 128)
+                # GROUP_SIZE must match BLOCK_M (tile_size_q) — both are 128.
+                # group_id = q_tile_index = pid_m
                 GROUP_SIZE: tl.constexpr = 128
                 group_id = (q_start) // GROUP_SIZE if num_groups > 1 else 0
                 group_id = tl.minimum(group_id, num_groups - 1)
@@ -192,7 +193,8 @@ def tiled_online_attention_kernel(
                 offs_d[None, :] * stride_o_d)
 
     out_mask = (offs_m[:, None] < N) & (offs_d[None, :] < D)
-    tl.store(out_ptrs, output_tile.to(q_tile.dtype), mask=out_mask)
+    # tl.store auto-casts float32 output_tile to the output tensor's dtype (bf16/fp16)
+    tl.store(out_ptrs, output_tile, mask=out_mask)
 
 
 # ============================================================================

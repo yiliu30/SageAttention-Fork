@@ -108,8 +108,9 @@ def v_smoothing(
     """
     Subtract V's mean to reduce outlier impact before quantization.
 
-    The correction (output += attn_weights_sum * v_mean) is applied post-kernel
-    in api.py, reading ctx.v_mean.
+    The correction (output += v_mean) is applied post-kernel in api.py,
+    reading ctx.v_mean. This works because sum(softmax_weights) = 1:
+    output = sum(softmax * (v - v_mean)) + v_mean = sum(softmax * v).
     """
     ctx.v_mean = v.mean(dim=-2, keepdim=True)  # [B, H, 1, D]
     v_centered = v - ctx.v_mean

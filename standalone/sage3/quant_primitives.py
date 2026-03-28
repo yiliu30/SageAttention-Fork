@@ -16,6 +16,7 @@ FP8_MAX = 448.0
 MICROSCALE_BLOCK_SIZE_16 = 16   # NVFP4 block size
 MICROSCALE_BLOCK_SIZE_32 = 32   # MXFP4/MXFP8 block size
 COMBINED_MAX = FP8_MAX * FP4_MAX  # 2688
+E8M0_MIN = 5.877471754111686e-39   # 2**-127, smallest positive E8M0 value
 
 # NVFP4 E2M1 representable values: ±{0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6}
 NVFP4_E2M1_VALUES = [-6, -4, -3, -2, -1.5, -1, -0.75, -0.5, 0, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6]
@@ -130,7 +131,7 @@ def round_to_e8m0_triton(scale):
     """
     scale_type = scale.dtype
     abs_scale = tl.abs(scale)
-    log2_scale = tl.log2(tl.maximum(abs_scale, 1.7014118346e-38))  # MIN_SUBNORMAL = 2**-127
+    log2_scale = tl.log2(tl.maximum(abs_scale, 5.877471754111686e-39))  # E8M0_MIN = 2**-127
     rounded = tl.ceil(log2_scale)
     rounded = tl.maximum(tl.minimum(rounded, 127.0), -127.0)
     return tl.exp2(rounded).to(scale_type)

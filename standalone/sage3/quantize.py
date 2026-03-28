@@ -12,6 +12,11 @@ from typing import Tuple
 from .quant_config import QuantConfig
 from .quant_primitives import apply_e2m1_quantization_torch
 
+# Epsilon to prevent division by zero in scale computation.
+# Applied both pre- and post-rounding because E4M3 rounding can map
+# small positive values (< ~1.95e-3) to zero.
+SCALE_EPSILON = 1e-8
+
 
 def quantize_qk(x: torch.Tensor, config: QuantConfig) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -50,8 +55,9 @@ def quantize_qk(x: torch.Tensor, config: QuantConfig) -> Tuple[torch.Tensor, tor
     # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, N, num_blocks]
     scales = block_max / config.fp_max
-    scales = torch.clamp(scales, min=1e-8)  # Epsilon to prevent division by zero
+    scales = torch.clamp(scales, min=SCALE_EPSILON)
     scales = config.round_scale_torch(scales)
+    scales = torch.clamp(scales, min=SCALE_EPSILON)  # E4M3 can round small values to 0
 
     # Normalize to quantization range
     x_normalized = x_blocks / scales.unsqueeze(-1)
@@ -109,8 +115,9 @@ def quantize_v(x: torch.Tensor, config: QuantConfig) -> Tuple[torch.Tensor, torc
     # Per-block scaling
     block_max = x_blocks.abs().max(dim=-1)[0]  # [B, H, D, num_blocks]
     scales = block_max / config.fp_max
-    scales = torch.clamp(scales, min=1e-8)  # Epsilon to prevent division by zero
+    scales = torch.clamp(scales, min=SCALE_EPSILON)
     scales = config.round_scale_torch(scales)
+    scales = torch.clamp(scales, min=SCALE_EPSILON)  # E4M3 can round small values to 0
 
     # Normalize and quantize
     x_normalized = x_blocks / scales.unsqueeze(-1)
