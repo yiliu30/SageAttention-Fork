@@ -20,73 +20,10 @@ standalone_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'stan
 if standalone_path not in sys.path:
     sys.path.insert(0, standalone_path)
 
+from profiling_utils import AttentionProportionProfiler, ModuleForwardTimer
+
 prompt_path = "videos/testing_prompts.txt"
 prompt_path = "videos/open_sora_prompts.txt"
-
-
-class AttentionProportionProfiler:
-    """Wraps an attention function with async CUDA event timing to measure
-    the total GPU time spent in attention without serializing the pipeline."""
-    def __init__(self, attn_fn):
-        self.attn_fn = attn_fn
-        self.events = []  # list of (start_event, end_event)
-
-    def __call__(self, *args, **kwargs):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        result = self.attn_fn(*args, **kwargs)
-        end.record()
-        self.events.append((start, end))
-        return result
-
-    def total_attn_ms(self):
-        torch.cuda.synchronize()
-        return sum(s.elapsed_time(e) for s, e in self.events)
-
-    def call_count(self):
-        return len(self.events)
-
-    def reset(self):
-        self.events.clear()
-
-
-class ModuleForwardTimer:
-    """Wraps a module's forward method with async CUDA event timing.
-    Use as a context manager or call attach/detach manually."""
-    def __init__(self, module):
-        self.module = module
-        self.events = []  # list of (start_event, end_event)
-        self._orig_forward = None
-
-    def attach(self):
-        self._orig_forward = self.module.forward
-        timer = self
-        orig = self._orig_forward
-        def timed_forward(*args, **kwargs):
-            start = torch.cuda.Event(enable_timing=True)
-            end = torch.cuda.Event(enable_timing=True)
-            start.record()
-            result = orig(*args, **kwargs)
-            end.record()
-            timer.events.append((start, end))
-            return result
-        self.module.forward = timed_forward
-
-    def detach(self):
-        if self._orig_forward is not None:
-            self.module.forward = self._orig_forward
-            self._orig_forward = None
-
-    def total_ms(self):
-        torch.cuda.synchronize()
-        return sum(s.elapsed_time(e) for s, e in self.events)
-
-    def call_count(self):
-        return len(self.events)
-
-    def reset(self):
-        self.events.clear()
 
 
 def parse_args():
@@ -137,7 +74,7 @@ if __name__ == "__main__":
 
     if args.model == "cogvideox-2b":
         model_path = "/storage/yiliu7/THUDM/CogVideoX-2b"
-        # model_path = "/mnt/disk1/yiliu7/models/zai-org/CogVideoX-2b"
+        model_path = "/mnt/disk1/yiliu7/models/zai-org/CogVideoX-2b"
         num_frames = 49
         torch_dtype = torch.float16
     else:
@@ -355,6 +292,7 @@ if __name__ == "__main__":
         del video
         gc.collect()
         torch.cuda.empty_cache()
+        sys.exit(0)
 
     if args.proportion:
         prompt = selected_prompts[0]
