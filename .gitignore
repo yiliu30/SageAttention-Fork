@@ -6,6 +6,7 @@
 /test
 __pycache__
 *.so
+/sageattention3_blackwell/benchmarks/sm120_fp8_mma_accum_bench
 evaluate/
 *.pkl
 *.vscode/
