@@ -204,14 +204,16 @@ void run_mha_fwd_dispatch_dtype(
     cudaStream_t stream,
     bool use_two_cta,
     bool bypass_p_packing,
-    bool use_fp8_pv) {
+    bool use_fp8_pv,
+    bool use_fp8_pv_register) {
     using OType = std::conditional_t<IsBF16, cutlass::bfloat16_t, cutlass::half_t>;
     if (params.d == 64) {
         run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 64, OType>(
-            params, stream, false, false, use_fp8_pv);
+            params, stream, false, false, use_fp8_pv, use_fp8_pv_register);
     } else if (params.d == 128) {
         run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 128, OType>(
-            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv);
+            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv,
+            use_fp8_pv_register);
     }
 }
 
@@ -220,10 +222,12 @@ void run_mha_fwd(
     cudaStream_t stream,
     bool use_two_cta,
     bool bypass_p_packing,
-    bool use_fp8_pv) {
+    bool use_fp8_pv,
+    bool use_fp8_pv_register) {
     BOOL_SWITCH(params.is_bf16, IsBF16, ([&] {
         run_mha_fwd_dispatch_dtype<IsBF16>(
-            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv);
+            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv,
+            use_fp8_pv_register);
     }));
 }
 
@@ -244,7 +248,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
         bool use_two_cta,
         bool bypass_p_packing,
         bool use_fp8_pv,
-        const c10::optional<at::Tensor> &v_scale
+        const c10::optional<at::Tensor> &v_scale,
+        bool use_fp8_pv_register
     ) {
 
     at::cuda::CUDAGuard device_guard{(char)q.get_device()};
@@ -252,6 +257,10 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     bool is_sm120 = dprops->major == 12 && dprops->minor == 0;
     bool is_sm121 = dprops->major == 12 && dprops->minor == 1;
     TORCH_CHECK(is_sm120 || is_sm121, "only supports Blackwell GPUs or newer.");
+    TORCH_CHECK(
+        !use_fp8_pv_register || !use_fp8_pv,
+        "FP8 P x V shared exchange and register remap are mutually exclusive");
+    bool const use_any_fp8_pv = use_fp8_pv || use_fp8_pv_register;
 
     auto q_dtype = q.scalar_type();
     auto sfq_dtype = sfq.scalar_type();
@@ -259,9 +268,9 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(k.scalar_type() == q_dtype, "query and key must have the same dtype");
     TORCH_CHECK(
         v.scalar_type() ==
-            (use_fp8_pv ? torch::kFloat8_e4m3fn : q_dtype),
-        use_fp8_pv ? "value must have dtype float8_e4m3fn"
-                   : "query and value must have the same dtype");
+            (use_any_fp8_pv ? torch::kFloat8_e4m3fn : q_dtype),
+        use_any_fp8_pv ? "value must have dtype float8_e4m3fn"
+                       : "query and value must have the same dtype");
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
     CHECK_DEVICE(delta_s);
 
@@ -270,7 +279,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
         "Q scale dtype must be float8_e4m3fn");
     TORCH_CHECK(sfk.scalar_type() == sfq_dtype, "query and key must have the same dtype");
     CHECK_DEVICE(sfq); CHECK_DEVICE(sfk);
-    if (use_fp8_pv) {
+    if (use_any_fp8_pv) {
         TORCH_CHECK(
             !sfv.has_value(),
             "FP8 P x V does not use FP4 V block scales");
@@ -333,10 +342,10 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(!use_two_cta || unpacked_head_size == 128, "The two-CTA kernel requires head dimension 128");
     TORCH_CHECK(!bypass_p_packing || unpacked_head_size == 128, "The P-packing ablation requires head dimension 128");
     TORCH_CHECK(!bypass_p_packing || !use_two_cta, "The P-packing ablation only supports the baseline kernel");
-    TORCH_CHECK(!use_fp8_pv || !use_two_cta, "FP8 P x V does not support the two-CTA kernel");
-    TORCH_CHECK(!use_fp8_pv || !bypass_p_packing, "FP8 P x V is incompatible with bypass_p_packing");
+    TORCH_CHECK(!use_any_fp8_pv || !use_two_cta, "FP8 P x V does not support the two-CTA kernel");
+    TORCH_CHECK(!use_any_fp8_pv || !bypass_p_packing, "FP8 P x V is incompatible with bypass_p_packing");
     TORCH_CHECK(
-        !use_fp8_pv || !is_causal || seqlen_q == seqlen_k,
+        !use_any_fp8_pv || !is_causal || seqlen_q == seqlen_k,
         "FP8 P x V does not support causal attention with unequal query and key lengths");
     if (bypass_p_packing) {
         TORCH_WARN_ONCE(
@@ -346,7 +355,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
 
     CHECK_SHAPE(q, batch_size, num_heads, seqlen_q, head_size_og);
     CHECK_SHAPE(k, batch_size, num_heads_k, seqlen_k, head_size_og);
-    if (use_fp8_pv) {
+    if (use_any_fp8_pv) {
         CHECK_SHAPE(v, batch_size, num_heads_k, unpacked_head_size, seqlen_k);
         CHECK_SHAPE(
             v_scale.value(),
@@ -399,7 +408,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
                      /*window_size_right=*/is_causal ? 0 : -1,
                      per_block_mean,
                      is_bf16,
-                     use_fp8_pv
+                     use_any_fp8_pv
                     );
     // TODO: 132 sm count?
     auto tile_count_semaphore = is_causal ? torch::full({1}, 132, opts.dtype(torch::kInt32)) : torch::empty({1}, opts.dtype(torch::kInt32));
@@ -412,7 +421,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
             stream,
             use_two_cta,
             bypass_p_packing,
-            use_fp8_pv);
+            use_any_fp8_pv,
+            use_fp8_pv_register);
     } else {
         // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
         out.zero_();
@@ -456,5 +466,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("use_two_cta") = false,
         pybind11::arg("bypass_p_packing") = false,
         pybind11::arg("use_fp8_pv") = false,
-        pybind11::arg("v_scale") = c10::nullopt);
+        pybind11::arg("v_scale") = c10::nullopt,
+        pybind11::arg("use_fp8_pv_register") = false);
 }

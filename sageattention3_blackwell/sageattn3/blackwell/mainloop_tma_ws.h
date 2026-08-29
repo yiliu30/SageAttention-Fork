@@ -34,6 +34,135 @@ using namespace cute;
 
 struct NoTmaCopy {};
 
+struct Fp8PVRegisterRemap {
+    CUTE_HOST_DEVICE
+    static constexpr int qk_col_to_logical(int col) {
+        int const block = col / 32;
+        int const local = col % 32;
+        return block * 32 + (local / 8) * 2 +
+            ((local % 8) / 2) * 8 + local % 2;
+    }
+
+    template <typename TiledMmaQK, typename TiledMmaPV>
+    CUTE_HOST_DEVICE
+    static constexpr bool validates_atom_layout() {
+        using QKCLayout = typename TiledMmaQK::Atom::Traits::CLayout;
+        using PVALayout = typename TiledMmaPV::Atom::Traits::ALayout;
+        QKCLayout qk_layout;
+        PVALayout pv_layout;
+
+        for (int destination_lane = 0; destination_lane < 32;
+             ++destination_lane) {
+            int const destination_t0 = destination_lane % 4;
+            int const t1 = destination_lane / 4;
+            for (int destination_register = 0;
+                 destination_register < 4;
+                 ++destination_register) {
+                int const row_select = destination_register % 2;
+                int const k_select = destination_register / 2;
+                int const source_t0 =
+                    2 * k_select + destination_t0 / 2;
+                int const source_lane = 4 * t1 + source_t0;
+                int const source_index =
+                    4 * (destination_t0 % 2) + 8 * row_select;
+
+                for (int byte = 0; byte < 4; ++byte) {
+                    int const qk_linear =
+                        qk_layout(source_lane, source_index + byte);
+                    int const pv_linear =
+                        pv_layout(
+                            destination_lane,
+                            4 * destination_register + byte);
+                    int const qk_row = qk_linear % 16;
+                    int const qk_col =
+                        qk_col_to_logical(qk_linear / 16);
+                    int const pv_row = pv_linear % 16;
+                    int const pv_col = pv_linear / 16;
+                    if (qk_row != pv_row || qk_col != pv_col) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    template <typename TensorScores, typename TensorP>
+    CUTLASS_DEVICE
+    static void convert(
+        TensorScores const& scores,
+        TensorP& p,
+        uint32_t peer_mask) {
+        CUTE_STATIC_ASSERT_V(size<0>(scores) == _16{});
+        CUTE_STATIC_ASSERT_V(size<1>(scores) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(scores) == _4{});
+        CUTE_STATIC_ASSERT_V(size<0>(p) == _16{});
+        CUTE_STATIC_ASSERT_V(size<1>(p) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(p) == _4{});
+
+        Tensor packed_p = recast<uint32_t>(p);
+        CUTE_STATIC_ASSERT_V(size<0>(packed_p) == _4{});
+        CUTE_STATIC_ASSERT_V(size<1>(packed_p) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(packed_p) == _4{});
+
+        cutlass::NumericArrayConverter<
+            cutlass::float_e4m3_t,
+            float,
+            4> convert_p;
+        auto pack_source = [&](int source_index, int k_tile) {
+            cutlass::Array<float, 4> source;
+            CUTLASS_PRAGMA_UNROLL
+            for (int byte = 0; byte < 4; ++byte) {
+                source[byte] =
+                    scores(source_index + byte + 16 * k_tile);
+            }
+            auto converted = convert_p(source);
+            static_assert(sizeof(converted) == sizeof(uint32_t));
+            return *converted.raw_data();
+        };
+
+        int const lane = threadIdx.x % cutlass::NumThreadsPerWarp;
+        int const destination_t0 = lane % 4;
+        int const source_t0_first_half = destination_t0 / 2;
+        int const source_t0_second_half = source_t0_first_half + 2;
+        bool const use_high_source_values = destination_t0 % 2 != 0;
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int k_tile = 0; k_tile < 4; ++k_tile) {
+            uint32_t const row0_low = pack_source(0, k_tile);
+            uint32_t const row0_high = pack_source(4, k_tile);
+            uint32_t const row1_low = pack_source(8, k_tile);
+            uint32_t const row1_high = pack_source(12, k_tile);
+
+            uint32_t const first_row0_low = __shfl_sync(
+                peer_mask, row0_low, source_t0_first_half, 4);
+            uint32_t const first_row0_high = __shfl_sync(
+                peer_mask, row0_high, source_t0_first_half, 4);
+            uint32_t const first_row1_low = __shfl_sync(
+                peer_mask, row1_low, source_t0_first_half, 4);
+            uint32_t const first_row1_high = __shfl_sync(
+                peer_mask, row1_high, source_t0_first_half, 4);
+            uint32_t const second_row0_low = __shfl_sync(
+                peer_mask, row0_low, source_t0_second_half, 4);
+            uint32_t const second_row0_high = __shfl_sync(
+                peer_mask, row0_high, source_t0_second_half, 4);
+            uint32_t const second_row1_low = __shfl_sync(
+                peer_mask, row1_low, source_t0_second_half, 4);
+            uint32_t const second_row1_high = __shfl_sync(
+                peer_mask, row1_high, source_t0_second_half, 4);
+
+            packed_p(0, 0, k_tile) =
+                use_high_source_values ? first_row0_high : first_row0_low;
+            packed_p(1, 0, k_tile) =
+                use_high_source_values ? first_row1_high : first_row1_low;
+            packed_p(2, 0, k_tile) =
+                use_high_source_values ? second_row0_high : second_row0_low;
+            packed_p(3, 0, k_tile) =
+                use_high_source_values ? second_row1_high : second_row1_low;
+        }
+    }
+};
+
 template <typename Ktraits, bool Is_causal>
 struct CollectiveMainloopFwd {
 
@@ -853,20 +982,14 @@ struct CollectiveMainloopFwd {
         auto col_limit_causal = [&](int row, int n_block) {
             return row + 1 + seqlen_k - n_block * kBlockN - seqlen_q + m_block * kBlockM;
         };
-        auto qk_col_to_logical = [](int col) {
-            // K preprocessing permutes each 32-token group for QK MMA.
-            int const block = col / 32;
-            int const local = col % 32;
-            return block * 32 + (local / 8) * 2 +
-                ((local % 8) / 2) * 8 + local % 2;
-        };
         {
             Tensor cS = cute::make_identity_tensor(select<0, 1>(TileShape_MNK{}));
             Tensor tScS = thread_mma_qk.partition_C(cS);
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < size(tSrS); ++i) {
                 int const col = Ktraits::kUseFp8PV
-                    ? qk_col_to_logical(int(get<1>(tScS(i))))
+                    ? Fp8PVRegisterRemap::qk_col_to_logical(
+                        int(get<1>(tScS(i))))
                     : int(get<1>(tScS(i)));
                 if constexpr (!Is_causal) {  // Just masking based on col
                     if (col >= int(unpadded_seqlen_k - n_block * kBlockN)) { tSrS(i) = -INFINITY; }
@@ -946,8 +1069,31 @@ struct CollectiveMainloopFwd {
                 }
             }
         };
+        uint32_t fp8_pv_register_peer_mask = 0;
+        if constexpr (Ktraits::kUseFp8PVRegisterRemap) {
+            static_assert(
+                Fp8PVRegisterRemap::template validates_atom_layout<
+                    TiledMmaQK,
+                    TiledMmaPV>(),
+                "QK-C to FP8 PV-A register remap does not match the MMA atoms");
+            Tensor cP = cute::make_identity_tensor(
+                select<0, 1>(TileShape_MNK{}));
+            Tensor tPcP = thread_mma_pv.partition_A(cP);
+            CUTE_STATIC_ASSERT_V(size(tPcP) == size(tSrS));
+            CUTE_STATIC_ASSERT_V(size<0>(TileShape_MNK{}) == _128{});
+            CUTE_STATIC_ASSERT_V(size<1>(TileShape_MNK{}) == _128{});
+            CUTE_STATIC_ASSERT_V(size<2>(tPcP) == _4{});
+            int const lane = threadIdx.x % cutlass::NumThreadsPerWarp;
+            fp8_pv_register_peer_mask = __match_any_sync(
+                __activemask(), lane / 4);
+        }
         auto prepare_fp8_p = [&](auto const& scores) {
-            if constexpr (Ktraits::kUseFp8PV) {
+            if constexpr (Ktraits::kUseFp8PVRegisterRemap) {
+                Fp8PVRegisterRemap::convert(
+                    scores,
+                    tOrP,
+                    fp8_pv_register_peer_mask);
+            } else if constexpr (Ktraits::kUseFp8PV) {
                 Tensor cS = cute::make_identity_tensor(
                     select<0, 1>(TileShape_MNK{}));
                 Tensor tScS = thread_mma_qk.partition_C(cS);
@@ -956,7 +1102,8 @@ struct CollectiveMainloopFwd {
                 for (int i = 0; i < size(scores); ++i) {
                     auto coord = tScS(i);
                     int const col =
-                        qk_col_to_logical(int(get<1>(coord)));
+                        Fp8PVRegisterRemap::qk_col_to_logical(
+                            int(get<1>(coord)));
                     sP(get<0>(coord), col) = convert_p(scores(i));
                 }
                 cutlass::arch::NamedBarrier::sync(
@@ -1044,7 +1191,8 @@ struct CollectiveMainloopFwd {
             #pragma unroll
             for (int i = 0; i < size(tSrS); ++i) {
                 int const col = Ktraits::kUseFp8PV
-                    ? qk_col_to_logical(int(get<1>(tScS(i))))
+                    ? Fp8PVRegisterRemap::qk_col_to_logical(
+                        int(get<1>(tScS(i))))
                     : int(get<1>(tScS(i)));
                 if (col >= col_limit_causal(
                         int(get<0>(tScS(i))),

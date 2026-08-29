@@ -112,7 +112,8 @@ template <
     int kProducerRegisters_ = 24,
     int kConsumerRegisters_ = 232,
     bool kBypassPPacking_ = false,
-    bool kUseFp8PV_ = false
+    bool kUseFp8PV_ = false,
+    bool kUseFp8PVRegisterRemap_ = false
 >
 struct Flash_fwd_kernel_traits {
     static constexpr int kBlockM = kBlockM_;
@@ -131,6 +132,9 @@ struct Flash_fwd_kernel_traits {
     static constexpr int kConsumerRegisters = kConsumerRegisters_;
     static constexpr bool kBypassPPacking = kBypassPPacking_;
     static constexpr bool kUseFp8PV = kUseFp8PV_;
+    static constexpr bool kUseFp8PVRegisterRemap =
+        kUseFp8PVRegisterRemap_;
+    static_assert(!kUseFp8PVRegisterRemap || kUseFp8PV);
     static constexpr int EpiStages = 1;
     static constexpr int NumSFQK = kHeadDim / 16;
     static constexpr int NumSFPV = kBlockN / 16;

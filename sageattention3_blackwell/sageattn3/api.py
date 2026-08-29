@@ -163,10 +163,16 @@ def blockscaled_fp4_attn(qlist: Tuple,
                          use_two_cta: bool = False,
                          bypass_p_packing: bool = False,
                          fp8_pv: bool = False,
+                         fp8_pv_register: bool = False,
                         ):
-    if fp8_pv and use_two_cta:
+    if fp8_pv and fp8_pv_register:
+        raise ValueError(
+            "fp8_pv and fp8_pv_register are mutually exclusive"
+        )
+    use_any_fp8_pv = fp8_pv or fp8_pv_register
+    if use_any_fp8_pv and use_two_cta:
         raise ValueError("fp8_pv does not support the two-CTA kernel")
-    if fp8_pv and bypass_p_packing:
+    if use_any_fp8_pv and bypass_p_packing:
         raise ValueError("fp8_pv is incompatible with bypass_p_packing")
     softmax_scale = (qlist[0].shape[-1] * 2) ** (-0.5)
     return fp4attn_cuda.fwd(
@@ -175,7 +181,7 @@ def blockscaled_fp4_attn(qlist: Tuple,
         vlist[0],
         qlist[1],
         klist[1],
-        None if fp8_pv else vlist[1],
+        None if use_any_fp8_pv else vlist[1],
         delta_s,
         KL,
         None,
@@ -186,7 +192,8 @@ def blockscaled_fp4_attn(qlist: Tuple,
         use_two_cta,
         bypass_p_packing,
         fp8_pv,
-        vlist[1] if fp8_pv else None,
+        vlist[1] if use_any_fp8_pv else None,
+        fp8_pv_register,
     )
 
 
@@ -200,7 +207,8 @@ def sageattn3_blackwell(
     kernel_variant="baseline",
     **kwargs,
 ):
-    if attn_mask is not None and kernel_variant == "fp8_pv":
+    fp8_variants = ("fp8_pv", "fp8_pv_register")
+    if attn_mask is not None and kernel_variant in fp8_variants:
         raise NotImplementedError("SageAttention 3 does not support attn_mask")
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
@@ -208,11 +216,13 @@ def sageattn3_blackwell(
     QL = q.size(2)
     KL = k.size(2)
     is_bf16 = q.dtype == torch.bfloat16
-    if kernel_variant not in ("baseline", "two_cta", "fp8_pv"):
+    if kernel_variant not in ("baseline", "two_cta", *fp8_variants):
         raise ValueError(f"Unknown kernel variant: {kernel_variant}")
     use_two_cta = kernel_variant == "two_cta"
     use_fp8_pv = kernel_variant == "fp8_pv"
-    if use_fp8_pv and is_causal and QL != KL:
+    use_fp8_pv_register = kernel_variant == "fp8_pv_register"
+    use_any_fp8_pv = use_fp8_pv or use_fp8_pv_register
+    if use_any_fp8_pv and is_causal and QL != KL:
         raise ValueError(
             "fp8_pv does not support causal attention with unequal query and key lengths"
         )
@@ -230,7 +240,7 @@ def sageattn3_blackwell(
     klist_from_cuda = scale_and_quant_fp4_permute(k)
     vlist_from_cuda = (
         scale_and_quant_fp8_transpose(v)
-        if use_fp8_pv
+        if use_any_fp8_pv
         else scale_and_quant_fp4_transpose(v)
     )
     o_fp4 = blockscaled_fp4_attn(
@@ -244,5 +254,6 @@ def sageattn3_blackwell(
         is_bf16,
         use_two_cta,
         fp8_pv=use_fp8_pv,
+        fp8_pv_register=use_fp8_pv_register,
     )[0][:, :, :QL, :].contiguous()
     return o_fp4

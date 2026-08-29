@@ -198,7 +198,9 @@ __global__ void __launch_bounds__(
             barrier_o.wait();
             collective_epilogue.mma_store(shared_storage, tiled_mma_pv, tOrO, threadIdx.x - NumCopyThreads); 
             barrier_o.arrive();
-            if constexpr (Ktraits::kUseFp8PV) {
+            if constexpr (
+                Ktraits::kUseFp8PV &&
+                !Ktraits::kUseFp8PVRegisterRemap) {
                 barrier_o.wait();
             }
             ++work_idx;

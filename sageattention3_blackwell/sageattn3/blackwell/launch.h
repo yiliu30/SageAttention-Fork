@@ -117,17 +117,27 @@ void run_mha_fwd_(
     cudaStream_t stream,
     bool use_two_cta,
     bool bypass_p_packing,
-    bool use_fp8_pv) {
+    bool use_fp8_pv,
+    bool use_fp8_pv_register) {
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         BOOL_SWITCH(params.per_block_mean, per_block, [&] {
             if constexpr (Headdim == 64 || Headdim == 128) {
                 if (use_fp8_pv) {
-                    run_flash_fwd<
-                        Flash_fwd_kernel_traits<
-                            Headdim, 128, 128, 2, 1, per_block, T, O,
-                            1, 24, 232, false, true>,
-                        Is_causal
-                    >(params, stream);
+                    if (use_fp8_pv_register) {
+                        run_flash_fwd<
+                            Flash_fwd_kernel_traits<
+                                Headdim, 128, 128, 2, 1, per_block, T, O,
+                                1, 24, 232, false, true, true>,
+                            Is_causal
+                        >(params, stream);
+                    } else {
+                        run_flash_fwd<
+                            Flash_fwd_kernel_traits<
+                                Headdim, 128, 128, 2, 1, per_block, T, O,
+                                1, 24, 232, false, true>,
+                            Is_causal
+                        >(params, stream);
+                    }
                     return;
                 }
                 if constexpr (Headdim == 128) {
