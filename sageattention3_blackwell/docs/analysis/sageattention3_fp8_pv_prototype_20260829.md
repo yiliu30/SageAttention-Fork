@@ -35,6 +35,20 @@ kernel remains the default. FP8 P×V rejects the two-CTA diagnostic,
 P-packing bypass, attention masks, and causal calls with unequal query and key
 lengths.
 
+## Direct register-remap variant
+
+`kernel_variant="fp8_pv_register"` retains the complete FP8 numerical path but
+replaces the P exchange with a direct register remap. CuTe identity tensors
+establish the QK-C and PV-A coordinates, including the inverse K
+preprocessing permutation. Each destination PV-A word gathers four converted
+E4M3 values from lanes in the same warp.
+
+For this variant the compiler removes the full P shared-memory store, LDSM
+reload, and both 256-consumer-thread named barriers per KV tile. The epilogue
+still requires the aliased `smem_o` allocation, so dynamic shared memory stays
+at 95.23 KiB. The shared-exchange `fp8_pv` variant remains available unchanged
+as the reference.
+
 ## Correctness coverage
 
 `benchmarks/validate_fp8_pv.py` checks:
@@ -49,7 +63,9 @@ lengths.
 - CUDA graph replay after input buffers change;
 - explicit rejection of unsupported masks and rectangular causal attention.
 
-The checks compare output with PyTorch SDPA and pass on the RTX 5090 D.
+Every category runs for both FP8 variants and directly compares their outputs.
+The 144 original/category checks plus three direct C++ boundary checks pass on
+the RTX 5090 D; register-remap output is bitwise identical to shared exchange.
 
 ## 16K performance
 
@@ -58,36 +74,39 @@ measured iterations.
 
 | Variant | Median latency | Effective TOPS |
 |---|---:|---:|
-| NVFP4 end-to-end | 8.396 ms | 654.8 |
-| FP8 P×V end-to-end | 20.649 ms | 266.2 |
-| NVFP4 kernel-only | 6.995 ms | 785.9 |
-| FP8 P×V kernel-only | 18.096 ms | 303.8 |
+| NVFP4 end-to-end | 8.386 ms | 655.6 |
+| FP8 P×V shared end-to-end | 20.421 ms | 269.2 |
+| FP8 P×V register end-to-end | 11.467 ms | 479.4 |
+| NVFP4 kernel-only | 7.026 ms | 782.5 |
+| FP8 P×V shared kernel-only | 17.928 ms | 306.6 |
+| FP8 P×V register kernel-only | 8.954 ms | 614.0 |
 
-FP8 P×V reaches 0.407× the end-to-end speed and 0.387× the kernel-only speed
-of the NVFP4 baseline. It does not meet the 3% promotion threshold and remains
-an experimental accuracy and architecture reference.
+Register remap is 1.781× faster end-to-end and 2.002× faster kernel-only than
+shared FP8. It still reaches only 0.731× the end-to-end speed and 0.785× the
+kernel-only speed of NVFP4, so NVFP4 remains the default.
 
 ## Nsight Compute result
 
 Nsight Compute 2026.2.1 collected a 41-pass full report:
 
 ```text
-/home/yiliu7/.local/state/sageattention3/sageattn3_pure_16k_fp8_pv.ncu-rep
+/home/yiliu7/.local/state/sageattention3/sageattn3_pure_16k_fp8_pv_register.ncu-rep
 ```
 
-| Metric | FP8 P×V |
+| Metric | FP8 P×V register |
 |---|---:|
-| Profile duration | 20.76 ms |
+| Profile duration | 9.48 ms |
 | Registers per thread | 168 |
 | Dynamic shared memory per CTA | 95.23 KiB |
 | Achieved occupancy | 20.83% |
-| Eligible warps per scheduler | 0.18 |
-| Cycles with no eligible warp | 85.40% |
-| Tensor pipeline utilization | 38.5% |
-| DRAM throughput | 1.83% |
-| L2 hit rate | 99.09% |
+| Eligible warps per scheduler | 0.34 |
+| Cycles with no eligible warp | 71.34% |
+| Tensor pipeline utilization | 83.14% |
+| DRAM throughput | 3.95% |
+| L2 throughput | 27.76% |
+| L2 hit rate | 96.06% |
 
-The FP8 kernel spends most cycles without an eligible warp. The smaller
-m16n8k32 MMA shape, two-stage pipeline, extra V bytes, and FP8 conversion work
-outweigh the removal of FP4 P block scales.
-
+The register variant remains one-CTA limited, but removing shared exchange
+raises tensor utilization substantially and almost halves event-measured
+kernel latency. NCU reports one allocated barrier instead of 15 and
+251.74 million LDSM instructions instead of 272.71 million for shared FP8.
