@@ -42,6 +42,7 @@ struct Qkv_params {
     void *__restrict__ sfq_ptr;
     void *__restrict__ sfk_ptr;
     void *__restrict__ sfv_ptr;
+    void *__restrict__ v_scale_ptr;
     // The stride between rows of the Q, K and V matrices.
     index_t q_batch_stride;
     index_t k_batch_stride;
@@ -65,6 +66,9 @@ struct Qkv_params {
     index_t sfq_head_stride;
     index_t sfk_head_stride;
     index_t sfv_head_stride;
+    index_t v_scale_batch_stride;
+    index_t v_scale_head_stride;
+    index_t v_scale_row_stride;
 
     // The number of heads.
     int h, h_k;

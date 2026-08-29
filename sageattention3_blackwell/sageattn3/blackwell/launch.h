@@ -32,6 +32,7 @@
 template<typename Kernel_traits, bool Is_causal>
 void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     using Element = typename Kernel_traits::Element;
+    using ElementV = typename Kernel_traits::ElementV;
     using ElementSF = typename Kernel_traits::ElementSF;
     using ElementOut = typename Kernel_traits::ElementOut;
     using TileShape_MNK = typename Kernel_traits::TileShape_MNK;
@@ -49,7 +50,7 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
             {params.seqlen_k, params.d, params.h_k, params.b},  // shape_K
             {params.k_row_stride, _1{}, params.k_head_stride, params.k_batch_stride},  // stride_K
             {params.unpadded_seqlen_k, params.d, params.h_k, params.b},  // shape_K
-            static_cast<Element const*>(params.v_ptr),
+            static_cast<ElementV const*>(params.v_ptr),
             {params.d, params.seqlen_k, params.h_k, params.b},  // shape_Vt
             {params.v_row_stride, _1{}, params.v_head_stride, params.v_batch_stride},  // stride_Vt
             static_cast<ElementSF const*>(params.sfq_ptr),
@@ -59,8 +60,13 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
             static_cast<ElementSF const*>(params.sfv_ptr),
             {params.d, params.seqlen_k, params.h_k, params.b},  // shape_SFVt
             static_cast<float const*>(params.delta_s_ptr),
-            {params.seqlen_s, params.seqlen_k, params.h_k, params.b},
+            {params.seqlen_s, params.seqlen_k, params.h, params.b},
             {params.ds_row_stride, _1{}, params.ds_head_stride, params.ds_batch_stride},
+            static_cast<float const*>(params.v_scale_ptr),
+            params.v_scale_batch_stride,
+            params.v_scale_head_stride,
+            params.v_scale_row_stride,
+            params.h_h_k_ratio,
             params.scale_softmax_log2
         });
     typename CollectiveEpilogue::Params epilogue_params =
@@ -110,10 +116,20 @@ void run_mha_fwd_(
     Flash_fwd_params &params,
     cudaStream_t stream,
     bool use_two_cta,
-    bool bypass_p_packing) {
+    bool bypass_p_packing,
+    bool use_fp8_pv) {
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         BOOL_SWITCH(params.per_block_mean, per_block, [&] {
             if constexpr (Headdim == 64 || Headdim == 128) {
+                if (use_fp8_pv) {
+                    run_flash_fwd<
+                        Flash_fwd_kernel_traits<
+                            Headdim, 128, 128, 2, 1, per_block, T, O,
+                            1, 24, 232, false, true>,
+                        Is_causal
+                    >(params, stream);
+                    return;
+                }
                 if constexpr (Headdim == 128) {
                     if (use_two_cta) {
                         run_flash_fwd<
