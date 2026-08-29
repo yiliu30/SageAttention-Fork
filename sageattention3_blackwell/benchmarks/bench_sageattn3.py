@@ -23,6 +23,7 @@ from sageattn3.api import (
     scale_and_quant_fp4,
     scale_and_quant_fp4_permute,
     scale_and_quant_fp4_transpose,
+    scale_and_quant_fp8_transpose,
 )
 
 
@@ -176,6 +177,7 @@ def main() -> None:
     pure_q_list = scale_and_quant_fp4(pure_q)
     pure_k_list = scale_and_quant_fp4_permute(pure_k)
     pure_v_list = scale_and_quant_fp4_transpose(pure_v)
+    pure_fp8_v_list = scale_and_quant_fp8_transpose(pure_v)
     candidate_q, candidate_k, candidate_v, candidate_delta_s = preprocess_qkv(
         q.clone(),
         k.clone(),
@@ -238,6 +240,18 @@ def main() -> None:
         args.iterations,
         device,
     )
+    fp8_pv_sage_ms = benchmark(
+        lambda: sageattn3_blackwell(
+            q,
+            k,
+            v,
+            is_causal=args.causal,
+            kernel_variant="fp8_pv",
+        ),
+        args.warmup,
+        args.iterations,
+        device,
+    )
     pure_sage_ms = benchmark(
         lambda: blockscaled_fp4_attn(
             pure_q_list,
@@ -260,6 +274,20 @@ def main() -> None:
             args.sequence_length,
             is_causal=args.causal,
             use_two_cta=True,
+        ),
+        args.warmup,
+        args.iterations,
+        device,
+    )
+    fp8_pv_pure_sage_ms = benchmark(
+        lambda: blockscaled_fp4_attn(
+            pure_q_list,
+            pure_k_list,
+            pure_fp8_v_list,
+            delta_s,
+            args.sequence_length,
+            is_causal=args.causal,
+            fp8_pv=True,
         ),
         args.warmup,
         args.iterations,
@@ -316,9 +344,13 @@ def main() -> None:
     sdpa_tops = attention_flops / (sdpa_ms * 1e9)
     sage_tops = attention_flops / (sage_ms * 1e9)
     candidate_sage_tops = attention_flops / (candidate_sage_ms * 1e9)
+    fp8_pv_sage_tops = attention_flops / (fp8_pv_sage_ms * 1e9)
     pure_sage_tops = attention_flops / (pure_sage_ms * 1e9)
     candidate_pure_sage_tops = attention_flops / (
         candidate_pure_sage_ms * 1e9
+    )
+    fp8_pv_pure_sage_tops = attention_flops / (
+        fp8_pv_pure_sage_ms * 1e9
     )
     qk_tops = qk_flops / (matmul_ms * 1e9)
     peak_matmul_tops = peak_matmul_flops / (peak_matmul_ms * 1e9)
@@ -345,12 +377,20 @@ def main() -> None:
         f"{candidate_sage_ms:>12.3f} {candidate_sage_tops:>10.1f}"
     )
     print(
+        f"{'SageAttention 3 FP8 P x V':<42} "
+        f"{fp8_pv_sage_ms:>12.3f} {fp8_pv_sage_tops:>10.1f}"
+    )
+    print(
         f"{'SageAttention 3 FP4 kernel only':<42} {pure_sage_ms:>12.3f} "
         f"{pure_sage_tops:>10.1f}"
     )
     print(
         f"{'SageAttention 3 FP4 kernel only (two CTA)':<42} "
         f"{candidate_pure_sage_ms:>12.3f} {candidate_pure_sage_tops:>10.1f}"
+    )
+    print(
+        f"{'SageAttention 3 FP8 P x V kernel only':<42} "
+        f"{fp8_pv_pure_sage_ms:>12.3f} {fp8_pv_pure_sage_tops:>10.1f}"
     )
     print(
         f"{'PyTorch matmul (QK^T, K transposed)':<42} {matmul_ms:>12.3f} {qk_tops:>10.1f}"
@@ -386,10 +426,17 @@ def main() -> None:
         "  Two-CTA FP4 kernel-only effective TOPS / NVFP4 GEMM TOPS: "
         f"{candidate_pure_sage_tops / nvfp4_matmul_tops:.2f}x"
     )
+    print(
+        "  FP8 P x V kernel-only effective TOPS / NVFP4 GEMM TOPS: "
+        f"{fp8_pv_pure_sage_tops / nvfp4_matmul_tops:.2f}x"
+    )
     print(f"  SageAttention / PyTorch SDPA: {sage_tops / sdpa_tops:.2f}x")
     print("\nTwo-CTA speedup over baseline:")
     print(f"  End-to-end: {sage_ms / candidate_sage_ms:.3f}x")
     print(f"  FP4 kernel only: {pure_sage_ms / candidate_pure_sage_ms:.3f}x")
+    print("\nFP8 P x V speedup over baseline:")
+    print(f"  End-to-end: {sage_ms / fp8_pv_sage_ms:.3f}x")
+    print(f"  Kernel only: {pure_sage_ms / fp8_pv_pure_sage_ms:.3f}x")
     exposed_p_packing_ms = pure_sage_interleaved_ms - bypass_p_packing_ms
     exposed_p_packing_fraction = exposed_p_packing_ms / pure_sage_interleaved_ms
     bypass_p_packing_tops = attention_flops / (bypass_p_packing_ms * 1e9)
