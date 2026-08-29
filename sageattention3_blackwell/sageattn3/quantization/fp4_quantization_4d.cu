@@ -385,6 +385,91 @@ __global__ void scaled_fp4_quant_trans_kernel(
   }
 }
 
+template <typename T>
+__global__ void scaled_fp8_quant_trans_kernel(
+    const T* input,
+    __nv_fp8_e4m3* output,
+    float* output_scale,
+    int num_tokens,
+    int padded_tokens,
+    int64_t stride_bz_input,
+    int64_t stride_h_input,
+    int64_t stride_seq_input,
+    int64_t stride_d_input,
+    int64_t stride_bz_output,
+    int64_t stride_h_output,
+    int64_t stride_d_output,
+    int64_t stride_seq_output,
+    int64_t stride_bz_scale,
+    int64_t stride_h_scale,
+    int64_t stride_d_scale) {
+  static_assert(
+      std::is_same<T, half>::value || std::is_same<T, nv_bfloat16>::value,
+      "Only half and bfloat16 input are supported");
+
+  constexpr int kWarpSize = 32;
+  constexpr int kWarpsPerBlock = 8;
+  __shared__ float warp_max[kWarpsPerBlock];
+  __shared__ float channel_scale;
+
+  const int channel = blockIdx.x;
+  const int head = blockIdx.y;
+  const int batch = blockIdx.z;
+  const int lane = threadIdx.x % kWarpSize;
+  const int warp = threadIdx.x / kWarpSize;
+
+  float local_max = 0.0f;
+  for (int token = threadIdx.x; token < num_tokens; token += blockDim.x) {
+    const int64_t input_offset =
+        batch * stride_bz_input + head * stride_h_input +
+        token * stride_seq_input + channel * stride_d_input;
+    local_max = fmaxf(local_max, fabsf(float(input[input_offset])));
+  }
+  #pragma unroll
+  for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
+    local_max = fmaxf(
+        local_max,
+        __shfl_down_sync(0xffffffff, local_max, offset));
+  }
+  if (lane == 0) {
+    warp_max[warp] = local_max;
+  }
+  __syncthreads();
+
+  if (warp == 0) {
+    local_max = lane < kWarpsPerBlock ? warp_max[lane] : 0.0f;
+    #pragma unroll
+    for (int offset = kWarpSize / 2; offset > 0; offset /= 2) {
+      local_max = fmaxf(
+          local_max,
+          __shfl_down_sync(0xffffffff, local_max, offset));
+    }
+    if (lane == 0) {
+      channel_scale = local_max / 448.0f;
+      output_scale[
+          batch * stride_bz_scale + head * stride_h_scale +
+          channel * stride_d_scale] = channel_scale;
+    }
+  }
+  __syncthreads();
+
+  const float inverse_scale =
+      channel_scale == 0.0f ? 0.0f : 1.0f / channel_scale;
+  for (int token = threadIdx.x; token < padded_tokens; token += blockDim.x) {
+    float value = 0.0f;
+    if (token < num_tokens) {
+      const int64_t input_offset =
+          batch * stride_bz_input + head * stride_h_input +
+          token * stride_seq_input + channel * stride_d_input;
+      value = float(input[input_offset]) * inverse_scale;
+    }
+    const int64_t output_offset =
+        batch * stride_bz_output + head * stride_h_output +
+        channel * stride_d_output + token * stride_seq_output;
+    output[output_offset] = __nv_fp8_e4m3(value);
+  }
+}
+
 void scaled_fp4_quant(torch::Tensor const& input,
                             torch::Tensor const& output,
                             torch::Tensor const& output_sf,
@@ -621,8 +706,109 @@ void scaled_fp4_quant_trans(torch::Tensor const& input,
   });
 }
 
+void scaled_fp8_quant_trans(torch::Tensor const& input,
+                            torch::Tensor const& output,
+                            torch::Tensor const& output_scale,
+                            int tensor_layout) {
+  constexpr int BLOCK_SIZE = 256;
+  constexpr int TOKEN_ALIGNMENT = 128;
+
+  CHECK_CUDA(input);
+  CHECK_CUDA(output);
+  CHECK_CUDA(output_scale);
+  TORCH_CHECK(
+      input.get_device() == output.get_device() &&
+          input.get_device() == output_scale.get_device(),
+      "input, output, and output_scale must be on the same CUDA device");
+
+  CHECK_LASTDIM_CONTIGUOUS(input);
+  CHECK_LASTDIM_CONTIGUOUS(output);
+  CHECK_LASTDIM_CONTIGUOUS(output_scale);
+  CHECK_DTYPE(output, at::ScalarType::Float8_e4m3fn);
+  CHECK_DTYPE(output_scale, at::ScalarType::Float);
+  CHECK_DIMS(input, 4);
+  CHECK_DIMS(output, 4);
+  CHECK_DIMS(output_scale, 3);
+  TORCH_CHECK(
+      tensor_layout == 0 || tensor_layout == 1,
+      "tensor_layout must be 0 (NHD) or 1 (HND)");
+
+  const int batch_size = input.size(0);
+  const int head_dim = input.size(3);
+  int num_tokens;
+  int num_heads;
+  int padded_tokens;
+  int64_t stride_h_input;
+  int64_t stride_seq_input;
+  int64_t stride_h_output;
+  int64_t stride_d_output;
+  int64_t stride_h_scale;
+  int64_t stride_d_scale;
+
+  if (tensor_layout == 0) {
+    num_tokens = input.size(1);
+    num_heads = input.size(2);
+    padded_tokens = output.size(3);
+    stride_seq_input = input.stride(1);
+    stride_h_input = input.stride(2);
+    stride_d_output = output.stride(1);
+    stride_h_output = output.stride(2);
+    stride_d_scale = output_scale.stride(1);
+    stride_h_scale = output_scale.stride(2);
+    CHECK_SHAPE(output, batch_size, head_dim, num_heads, padded_tokens);
+    CHECK_SHAPE(output_scale, batch_size, head_dim, num_heads);
+  } else {
+    num_tokens = input.size(2);
+    num_heads = input.size(1);
+    padded_tokens = output.size(3);
+    stride_h_input = input.stride(1);
+    stride_seq_input = input.stride(2);
+    stride_h_output = output.stride(1);
+    stride_d_output = output.stride(2);
+    stride_h_scale = output_scale.stride(1);
+    stride_d_scale = output_scale.stride(2);
+    CHECK_SHAPE(output, batch_size, num_heads, head_dim, padded_tokens);
+    CHECK_SHAPE(output_scale, batch_size, num_heads, head_dim);
+  }
+
+  TORCH_CHECK(
+      padded_tokens >= num_tokens && padded_tokens % TOKEN_ALIGNMENT == 0,
+      "output sequence dimension must be a multiple of 128 and cover input");
+  TORCH_CHECK(
+      head_dim == 64 || head_dim == 128,
+      "Only head dimensions 64 and 128 are supported");
+
+  at::cuda::CUDAGuard device_guard{input.device()};
+  auto stream = at::cuda::getCurrentCUDAStream(input.get_device());
+  dim3 block(BLOCK_SIZE);
+  dim3 grid(head_dim, num_heads, batch_size);
+  auto input_dtype = input.scalar_type();
+
+  DISPATCH_PYTORCH_DTYPE_TO_CTYPE_FP16(input_dtype, c_type, {
+    scaled_fp8_quant_trans_kernel<c_type><<<grid, block, 0, stream>>>(
+        reinterpret_cast<c_type const*>(input.data_ptr()),
+        reinterpret_cast<__nv_fp8_e4m3*>(output.data_ptr()),
+        output_scale.data_ptr<float>(),
+        num_tokens,
+        padded_tokens,
+        input.stride(0),
+        stride_h_input,
+        stride_seq_input,
+        input.stride(3),
+        output.stride(0),
+        stride_h_output,
+        stride_d_output,
+        output.stride(3),
+        output_scale.stride(0),
+        stride_h_scale,
+        stride_d_scale);
+  });
+  C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   m.def("scaled_fp4_quant", &scaled_fp4_quant);
   m.def("scaled_fp4_quant_permute", &scaled_fp4_quant_permute);
   m.def("scaled_fp4_quant_trans", &scaled_fp4_quant_trans);
+  m.def("scaled_fp8_quant_trans", &scaled_fp8_quant_trans);
 }
