@@ -52,10 +52,13 @@ def group_mean_kernel(
     tl.store(qm_out_ptr + qm_offset, qm_group)
 
 
-def triton_group_mean(q: torch.Tensor):
+def triton_group_mean(q: torch.Tensor, group_size: int = 128):
     B, H, L, D = q.shape
-    GROUP_SIZE = 128
-    num_groups = L // GROUP_SIZE
+    if group_size <= 0 or L % group_size != 0:
+        raise ValueError(
+            f"group_size must evenly divide sequence length {L}, got {group_size}"
+        )
+    num_groups = L // group_size
     
     q_out = torch.empty_like(q)  # [B, H, L, D]
     qm = torch.empty(B, H, num_groups, D, device=q.device, dtype=q.dtype) 
@@ -67,12 +70,18 @@ def triton_group_mean(q: torch.Tensor):
         B, H, L, D,
         q.stride(0), q.stride(1), q.stride(2), q.stride(3),
         qm.stride(0), qm.stride(1), qm.stride(2), qm.stride(3),
-        GROUP_SIZE=GROUP_SIZE
+        GROUP_SIZE=group_size
     )
     return q_out, qm
 
 
-def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_mean: bool = True):
+def preprocess_qkv(
+    q: torch.Tensor,
+    k: torch.Tensor,
+    v: torch.Tensor,
+    per_block_mean: bool = True,
+    q_group_size: int = 128,
+):
 
     def pad_128(x):
         L = x.size(2)
@@ -84,7 +93,7 @@ def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_
     k -= k.mean(dim=-2, keepdim=True)  
     q, k, v = map(lambda x: pad_128(x), [q, k, v])
     if per_block_mean:
-        q, qm = triton_group_mean(q)
+        q, qm = triton_group_mean(q, q_group_size)
     else:
         qm = q.mean(dim=-2, keepdim=True)
         q = q - qm
@@ -122,31 +131,71 @@ def blockscaled_fp4_attn(qlist: Tuple,
                          KL: int,
                          is_causal: bool = False, 
                          per_block_mean: bool = True,
-                         is_bf16: bool = True
+                         is_bf16: bool = True,
+                         use_two_cta: bool = False,
+                         bypass_p_packing: bool = False,
                         ):
     softmax_scale = (qlist[0].shape[-1] * 2) ** (-0.5)
-    return fp4attn_cuda.fwd(qlist[0], klist[0], vlist[0], qlist[1], klist[1], vlist[1], delta_s, KL, None, softmax_scale, is_causal, per_block_mean, is_bf16)
+    return fp4attn_cuda.fwd(
+        qlist[0],
+        klist[0],
+        vlist[0],
+        qlist[1],
+        klist[1],
+        vlist[1],
+        delta_s,
+        KL,
+        None,
+        softmax_scale,
+        is_causal,
+        per_block_mean,
+        is_bf16,
+        use_two_cta,
+        bypass_p_packing,
+    )
 
 
-def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = True, **kwargs):
+def sageattn3_blackwell(
+    q,
+    k,
+    v,
+    attn_mask=None,
+    is_causal=False,
+    per_block_mean=True,
+    kernel_variant="baseline",
+    **kwargs,
+):
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
         return sdpa(q, k, v, is_causal = is_causal)
     QL = q.size(2)
     KL = k.size(2)
     is_bf16 = q.dtype == torch.bfloat16
-    q, k, v, delta_s = preprocess_qkv(q, k, v, per_block_mean)
+    if kernel_variant not in ("baseline", "two_cta"):
+        raise ValueError(f"Unknown kernel variant: {kernel_variant}")
+    use_two_cta = kernel_variant == "two_cta"
+    if use_two_cta and q.size(-1) != 128:
+        raise ValueError("The two_cta kernel requires head dimension 128")
+    q_group_size = 64 if use_two_cta else 128
+    q, k, v, delta_s = preprocess_qkv(
+        q,
+        k,
+        v,
+        per_block_mean,
+        q_group_size,
+    )
     qlist_from_cuda = scale_and_quant_fp4(q)
     klist_from_cuda = scale_and_quant_fp4_permute(k)
     vlist_from_cuda = scale_and_quant_fp4_transpose(v)
     o_fp4 = blockscaled_fp4_attn(
-    qlist_from_cuda,
-    klist_from_cuda, 
-    vlist_from_cuda,
-    delta_s,
-    KL,
-    is_causal,
-    per_block_mean,
-    is_bf16
+        qlist_from_cuda,
+        klist_from_cuda,
+        vlist_from_cuda,
+        delta_s,
+        KL,
+        is_causal,
+        per_block_mean,
+        is_bf16,
+        use_two_cta,
     )[0][:, :, :QL, :].contiguous()
     return o_fp4

@@ -185,18 +185,29 @@ void set_params_fprop(Flash_fwd_params &params,
 }
 
 template<bool IsBF16>
-void run_mha_fwd_dispatch_dtype(Flash_fwd_params &params, cudaStream_t stream) {
+void run_mha_fwd_dispatch_dtype(
+    Flash_fwd_params &params,
+    cudaStream_t stream,
+    bool use_two_cta,
+    bool bypass_p_packing) {
     using OType = std::conditional_t<IsBF16, cutlass::bfloat16_t, cutlass::half_t>;
     if (params.d == 64) {
-        run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 64, OType>(params, stream);
+        run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 64, OType>(
+            params, stream, false, false);
     } else if (params.d == 128) {
-        run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 128, OType>(params, stream);
+        run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 128, OType>(
+            params, stream, use_two_cta, bypass_p_packing);
     }
 }
 
-void run_mha_fwd(Flash_fwd_params &params, cudaStream_t stream, bool force_split_kernel = false) {
+void run_mha_fwd(
+    Flash_fwd_params &params,
+    cudaStream_t stream,
+    bool use_two_cta,
+    bool bypass_p_packing) {
     BOOL_SWITCH(params.is_bf16, IsBF16, ([&] {
-        run_mha_fwd_dispatch_dtype<IsBF16>(params, stream);
+        run_mha_fwd_dispatch_dtype<IsBF16>(
+            params, stream, use_two_cta, bypass_p_packing);
     }));
 }
 
@@ -213,7 +224,9 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
         const float softmax_scale,
         bool is_causal, 
         bool per_block_mean,
-        bool is_bf16
+        bool is_bf16,
+        bool use_two_cta,
+        bool bypass_p_packing
     ) {
 
     auto dprops = at::cuda::getCurrentDeviceProperties();
@@ -258,11 +271,21 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(num_heads == num_heads_k, "We do not support MQA/GQA yet");
 
     TORCH_CHECK(unpacked_head_size == 64 || unpacked_head_size == 128 || unpacked_head_size == 256, "Only support head size 64, 128, and 256 for now");
+    TORCH_CHECK(!use_two_cta || unpacked_head_size == 128, "The two-CTA kernel requires head dimension 128");
+    TORCH_CHECK(!bypass_p_packing || unpacked_head_size == 128, "The P-packing ablation requires head dimension 128");
+    TORCH_CHECK(!bypass_p_packing || !use_two_cta, "The P-packing ablation only supports the baseline kernel");
+    if (bypass_p_packing) {
+        TORCH_WARN_ONCE(
+            "bypass_p_packing is a performance diagnostic and returns "
+            "numerically invalid attention output");
+    }
 
     CHECK_SHAPE(q, batch_size, num_heads, seqlen_q, head_size_og);
     CHECK_SHAPE(k, batch_size, num_heads_k, seqlen_k, head_size_og);
     CHECK_SHAPE(v, batch_size, num_heads_k, unpacked_head_size, seqlen_k/2);
-    // CHECK_SHAPE(delta_s, batch_size, num_heads, seqlen_q / 128, seqlen_k);
+    const int query_block_size = use_two_cta ? 64 : 128;
+    const int delta_s_rows = per_block_mean ? seqlen_q / query_block_size : 1;
+    CHECK_SHAPE(delta_s, batch_size, num_heads, delta_s_rows, seqlen_k);
     // CHECK_SHAPE(sfq, batch_size, seqlen_q, num_heads, unpacked_head_size);
     // CHECK_SHAPE(sfk, batch_size, seqlen_k, num_heads_k, unpacked_head_size);
     // CHECK_SHAPE(sfv, batch_size, unpacked_head_size, num_heads_k, seqlen_k);
@@ -313,7 +336,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
 
     if (seqlen_k > 0) {
         auto stream = at::cuda::getCurrentCUDAStream().stream();
-        run_mha_fwd(params, stream);
+        run_mha_fwd(params, stream, use_two_cta, bypass_p_packing);
     } else {
         // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
         out.zero_();
@@ -337,5 +360,23 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "FlashAttention";
-    m.def("fwd", &mha_fwd, "Forward pass");
+    m.def(
+        "fwd",
+        &mha_fwd,
+        "Forward pass",
+        pybind11::arg("q"),
+        pybind11::arg("k"),
+        pybind11::arg("v"),
+        pybind11::arg("sfq"),
+        pybind11::arg("sfk"),
+        pybind11::arg("sfv"),
+        pybind11::arg("delta_s"),
+        pybind11::arg("unpadded_k"),
+        pybind11::arg("out"),
+        pybind11::arg("softmax_scale"),
+        pybind11::arg("is_causal"),
+        pybind11::arg("per_block_mean"),
+        pybind11::arg("is_bf16"),
+        pybind11::arg("use_two_cta") = false,
+        pybind11::arg("bypass_p_packing") = false);
 }

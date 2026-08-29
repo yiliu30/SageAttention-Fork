@@ -689,17 +689,31 @@ struct CollectiveMainloopFwd {
         //     cute::gemm(tiled_mma_pv, make_zip_tensor(tOrP(_, _, block_id), tOrSFP(_, _, block_id)), make_zip_tensor(tOrVt(_, _, block_id), tOrSFVt(_, _, block_id)), tOrO);
         // };
         auto add_delta_s = [&](auto& acc) {
-            auto tSsDS_stage = recast<float4>(sDS(_, _, smem_pipe_read_k.index()));
-            auto acc_float4 = recast<float4>(acc);
-            int quad_id = (threadIdx.x % 4) * 2;
-            for (int i = 0; i < 4; i++) {
-                auto num = quad_id + i * 8;
-                float4 delta_s_0 = tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num, _0{}));
-                float4 delta_s_1 = tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num + 1, _0{}));
-                acc_float4(make_coord(make_coord(_0{}, _0{}), _0{}), _0{}, i) = delta_s_0;
-                acc_float4(make_coord(make_coord(_0{}, _0{}), _1{}), _0{}, i) = delta_s_0;
-                acc_float4(make_coord(make_coord(_0{}, _1{}), _0{}), _0{}, i) = delta_s_1;
-                acc_float4(make_coord(make_coord(_0{}, _1{}), _1{}), _0{}, i) = delta_s_1;
+            if constexpr (kBlockM == 128 && kBlockN == 128) {
+                auto tSsDS_stage = recast<float4>(sDS(_, _, smem_pipe_read_k.index()));
+                auto acc_float4 = recast<float4>(acc);
+                int quad_id = (threadIdx.x % 4) * 2;
+                for (int i = 0; i < 4; i++) {
+                    auto num = quad_id + i * 8;
+                    float4 delta_s_0 = tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num, _0{}));
+                    float4 delta_s_1 = tSsDS_stage(make_coord(_0{}, _0{}), make_coord(num + 1, _0{}));
+                    acc_float4(make_coord(make_coord(_0{}, _0{}), _0{}), _0{}, i) = delta_s_0;
+                    acc_float4(make_coord(make_coord(_0{}, _0{}), _1{}), _0{}, i) = delta_s_0;
+                    acc_float4(make_coord(make_coord(_0{}, _1{}), _0{}), _0{}, i) = delta_s_1;
+                    acc_float4(make_coord(make_coord(_0{}, _1{}), _1{}), _0{}, i) = delta_s_1;
+                }
+            } else {
+                Tensor cS = make_identity_tensor(select<0, 1>(TileShape_MNK{}));
+                Tensor tScS = thread_mma_qk.partition_C(cS);
+                cute::for_each(
+                    cute::make_seq<decltype(size(acc))::value>{},
+                    [&](auto i) {
+                        auto coord = tScS(i);
+                        acc(i) = sDS(
+                            get<0>(coord),
+                            get<1>(coord),
+                            smem_pipe_read_k.index());
+                    });
             }
         };
         consumer_wait(pipeline_q, smem_pipe_read_q);
@@ -772,17 +786,32 @@ struct CollectiveMainloopFwd {
             for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
                     CUTLASS_PRAGMA_UNROLL
                     for (int i = 0; i < 4; ++i) {
-                        flash::packed_float_to_e2m1(
-                            acc_conversion_stagek(make_coord(_0{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_1{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_2{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_3{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_4{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_5{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_6{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_7{}, i), mma_m),
-                            tOrP_uint32_view(i, mma_m)
-                        );
+                        if constexpr (Ktraits::kBypassPPacking) {
+                            asm volatile(
+                                ""
+                                :
+                                : "f"(acc_conversion_stagek(make_coord(_0{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_1{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_2{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_3{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_4{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_5{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_6{}, i), mma_m)),
+                                  "f"(acc_conversion_stagek(make_coord(_7{}, i), mma_m)));
+                            tOrP_uint32_view(i, mma_m) = 0;
+                        } else {
+                            flash::packed_float_to_e2m1(
+                                acc_conversion_stagek(make_coord(_0{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_1{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_2{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_3{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_4{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_5{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_6{}, i), mma_m),
+                                acc_conversion_stagek(make_coord(_7{}, i), mma_m),
+                                tOrP_uint32_view(i, mma_m)
+                            );
+                        }
                     }
                     uint32_t local_sfp = SFP_uint32_view(_0{}, _0{}, mma_m);
                     uint32_t peer_sfp  = __shfl_xor_sync(int32_t(-1), local_sfp, 2);
@@ -905,4 +934,3 @@ struct CollectiveMainloopFwd {
 };
 
 } // namespace flash
-

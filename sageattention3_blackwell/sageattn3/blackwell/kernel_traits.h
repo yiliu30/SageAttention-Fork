@@ -73,7 +73,11 @@ template <
     int kClusterM_, 
     bool BlockMean_,
     typename ElementPairType_ = cutlass::nv_float4_t<cutlass::float_e2m1_t>, 
-    typename ElementOut_ = cutlass::bfloat16_t
+    typename ElementOut_ = cutlass::bfloat16_t,
+    int kMinBlocksPerSm_ = 1,
+    int kProducerRegisters_ = 24,
+    int kConsumerRegisters_ = 232,
+    bool kBypassPPacking_ = false
 >
 struct Flash_fwd_kernel_traits {
     static constexpr int kBlockM = kBlockM_;
@@ -87,6 +91,10 @@ struct Flash_fwd_kernel_traits {
     static constexpr int kNThreads = kNWarps * cutlass::NumThreadsPerWarp;
     static constexpr int kClusterM = kClusterM_;
     static constexpr int kStages = kStages_;
+    static constexpr int kMinBlocksPerSm = kMinBlocksPerSm_;
+    static constexpr int kProducerRegisters = kProducerRegisters_;
+    static constexpr int kConsumerRegisters = kConsumerRegisters_;
+    static constexpr bool kBypassPPacking = kBypassPPacking_;
     static constexpr int EpiStages = 1;
     static constexpr int NumSFQK = kHeadDim / 16;
     static constexpr int NumSFPV = kBlockN / 16;
@@ -199,4 +207,3 @@ struct Flash_fwd_kernel_traits {
     using PipelineStateQ = typename cutlass::PipelineState<1>;
     using EpilogueBarrier = typename flash::OrderedSequenceBarrierVarGroupSize<EpiStages, 2>;
 };
-

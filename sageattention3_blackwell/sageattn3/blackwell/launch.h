@@ -86,7 +86,16 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
     static constexpr int ctaSize = Kernel_traits::kNWarps * 32;
     params.m_block_divmod = cutlass::FastDivmod(num_blocks_m);
     params.total_blocks = num_blocks_m * params.h * params.b;
-    dim3 grid_dims = Scheduler::get_grid_dim(scheduler_args, 170);
+    int device;
+    int num_sm;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    C10_CUDA_CHECK(cudaDeviceGetAttribute(
+        &num_sm,
+        cudaDevAttrMultiProcessorCount,
+        device));
+    dim3 grid_dims = Scheduler::get_grid_dim(
+        scheduler_args,
+        num_sm * Kernel_traits::kMinBlocksPerSm);
     dim3 block_dims(ctaSize);
     dim3 cluster_dims(size<0>(ClusterShape{}), size<1>(ClusterShape{}), size<2>(ClusterShape{}));
     cutlass::ClusterLaunchParams launch_params{grid_dims, block_dims, cluster_dims, smem_size, stream};
@@ -97,14 +106,43 @@ void run_flash_fwd(Flash_fwd_params &params, cudaStream_t stream) {
 
 
 template<typename T, int Headdim, typename O = cutlass::bfloat16_t>
-void run_mha_fwd_(Flash_fwd_params &params, cudaStream_t stream) {
+void run_mha_fwd_(
+    Flash_fwd_params &params,
+    cudaStream_t stream,
+    bool use_two_cta,
+    bool bypass_p_packing) {
     BOOL_SWITCH(params.is_causal, Is_causal, [&] {
         BOOL_SWITCH(params.per_block_mean, per_block, [&] {
             if constexpr (Headdim == 64 || Headdim == 128) {
-                run_flash_fwd<
-                    Flash_fwd_kernel_traits<Headdim, 128, 128, 3, 1, per_block, T, O>,
-                    Is_causal
-                >(params, stream);
+                if constexpr (Headdim == 128) {
+                    if (use_two_cta) {
+                        run_flash_fwd<
+                            Flash_fwd_kernel_traits<
+                                Headdim, 64, 64, 2, 1, per_block, T, O,
+                                2, 24, 208>,
+                            Is_causal
+                        >(params, stream);
+                    } else if (bypass_p_packing) {
+                        run_flash_fwd<
+                            Flash_fwd_kernel_traits<
+                                Headdim, 128, 128, 3, 1, per_block, T, O,
+                                1, 24, 232, true>,
+                            Is_causal
+                        >(params, stream);
+                    } else {
+                        run_flash_fwd<
+                            Flash_fwd_kernel_traits<
+                                Headdim, 128, 128, 3, 1, per_block, T, O>,
+                            Is_causal
+                        >(params, stream);
+                    }
+                } else {
+                    run_flash_fwd<
+                        Flash_fwd_kernel_traits<
+                            Headdim, 128, 128, 3, 1, per_block, T, O>,
+                        Is_causal
+                    >(params, stream);
+                }
             } else {
                 static_assert(Headdim == 64 || Headdim == 128, "Unsupported Headdim");
             }

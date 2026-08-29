@@ -38,7 +38,9 @@ namespace flash {
 using namespace cute;
 
 template <typename Ktraits, bool Is_causal, typename TileScheduler>
-__global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp, 1)
+__global__ void __launch_bounds__(
+    Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
+    Ktraits::kMinBlocksPerSm)
     compute_attn_ws(CUTE_GRID_CONSTANT Flash_fwd_params const params,
                     CUTE_GRID_CONSTANT typename CollectiveMainloopFwd<Ktraits, Is_causal>::Params const mainloop_params,
                     CUTE_GRID_CONSTANT typename CollectiveEpilogueFwd<Ktraits>::Params const epilogue_params,
@@ -138,7 +140,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
     __syncthreads();
 
     if (warp_group_role == WarpGroupRole::Producer) {
-        cutlass::arch::warpgroup_reg_dealloc<24>();
+        cutlass::arch::warpgroup_reg_dealloc<Ktraits::kProducerRegisters>();
         TileScheduler scheduler;
         
         if (producer_warp_role == ProducerWarpRole::Mainloop) {  // Load Q, K, V
@@ -166,7 +168,7 @@ __global__ void __launch_bounds__(Ktraits::kNWarps * cutlass::NumThreadsPerWarp,
             
         }
     } else if (warp_group_role == WarpGroupRole::Consumer0 || warp_group_role == WarpGroupRole::Consumer1) {
-        cutlass::arch::warpgroup_reg_alloc<232>();
+        cutlass::arch::warpgroup_reg_alloc<Ktraits::kConsumerRegisters>();
         typename Ktraits::TiledMmaPV tiled_mma_pv;
         TileScheduler scheduler{};
         PipelineState smem_pipe_read_k, smem_pipe_read_v;
