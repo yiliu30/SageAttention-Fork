@@ -287,3 +287,43 @@ prototype, but not to predict a 1.14× attention speedup: the integrated kernel
 has softmax, data movement, scheduling, and a much larger live register set,
 so the prototype must still demonstrate lower total registers or lower tensor
 dependency stalls and an end-to-end kernel gain.
+
+## Logical FP8 m16n32k64 scheduling gate
+
+An explicit logical `m16n32k64` FP8 operation still contains eight native
+`m16n8k32` instructions: four N slices and two K slices. The composite order
+issues all four independent N slices for K0, then accumulates K1 into those
+four fragments. The existing CuTe path keeps K outside the tiled M/N
+traversal, which can expose additional independent M fragments before the
+dependent K1 instructions.
+
+The standalone benchmark compares those schedules with one, two, and four
+live M fragments. Both paths use identical runtime E4M3 operands, instruction
+counts, output work, and CUDA-event timing. Build and run the gate with:
+
+```bash
+./benchmarks/run_sm120_fp8_mma_accum.sh --build-only
+CUDA_VISIBLE_DEVICES=0 ./benchmarks/sm120_fp8_mma_accum_bench \
+  --mode composite --warmup 15 --iterations 75 --inner 8192 \
+  --blocks-per-sm 60
+```
+
+A representative run measured:
+
+| Live M fragments | Native CuTe order | Logical composite | Native/composite |
+|---:|---:|---:|---:|
+| 1 | 504.946 TOPS | 505.168 TOPS | 1.000× |
+| 2 | 502.820 TOPS | 502.876 TOPS | 1.000× |
+| 4 | 502.940 TOPS | 503.000 TOPS | 1.000× |
+
+The schedules use the same register count at each shape: 46 registers/thread
+for M1, 70 for M2, and 118 for M4. Three complete runs placed the composite
+between 0.995× and 1.001× of the native schedule, and paired checksums were
+identical. SASS retained the requested FP8 `QMMA.16832.F32.E4M3.E4M3`
+instructions but showed no throughput-relevant advantage.
+
+This fails the predefined 2% integration gate. A custom CuTe
+`m16n32k64` atom would change fragment packaging and instruction order, not
+the native instruction count or tensor-pipeline throughput. It is therefore
+not integrated into the attention kernel, and `fp8_pv_register` remains
+unchanged.

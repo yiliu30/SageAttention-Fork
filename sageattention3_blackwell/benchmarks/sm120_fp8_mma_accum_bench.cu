@@ -20,6 +20,8 @@ namespace {
 constexpr int kThroughputThreads = 256;
 constexpr int kWarpsPerThroughputBlock = kThroughputThreads / 32;
 constexpr int kFoldChains = 4;
+constexpr int kCompositeNSlices = 4;
+constexpr int kCompositeKSlices = 2;
 constexpr double kOpsPerMma = 16.0 * 8.0 * 32.0 * 2.0;
 constexpr uint32_t kE4m3OneOver64 = 0x08080808u;
 
@@ -259,6 +261,94 @@ void folded_accumulator_kernel(int folds, const uint32_t* operands,
   output[index] = checksum;
 }
 
+template <int MChains>
+__device__ __forceinline__ void composite_m16n32k64(
+    float (&accum)[MChains][kCompositeNSlices][4],
+    const uint32_t (&a)[MChains][kCompositeKSlices][4],
+    const uint32_t (&b)[kCompositeNSlices][kCompositeKSlices][2],
+    int m) {
+#pragma unroll
+  for (int k = 0; k < kCompositeKSlices; ++k) {
+#pragma unroll
+    for (int n = 0; n < kCompositeNSlices; ++n) {
+      mma_e4m3_f32(
+          accum[m][n][0], accum[m][n][1], accum[m][n][2],
+          accum[m][n][3], a[m][k][0], a[m][k][1], a[m][k][2],
+          a[m][k][3], b[n][k][0], b[n][k][1]);
+    }
+  }
+}
+
+template <bool UseComposite, int MChains>
+__global__ __launch_bounds__(kThroughputThreads)
+void m16n32k64_schedule_kernel(int inner, const uint32_t* operands,
+                               float* output) {
+  uint32_t a[MChains][kCompositeKSlices][4];
+  uint32_t b[kCompositeNSlices][kCompositeKSlices][2];
+  int operand = 0;
+#pragma unroll
+  for (int m = 0; m < MChains; ++m) {
+#pragma unroll
+    for (int k = 0; k < kCompositeKSlices; ++k) {
+#pragma unroll
+      for (int value = 0; value < 4; ++value) {
+        a[m][k][value] = operands[operand++];
+      }
+    }
+  }
+#pragma unroll
+  for (int n = 0; n < kCompositeNSlices; ++n) {
+#pragma unroll
+    for (int k = 0; k < kCompositeKSlices; ++k) {
+#pragma unroll
+      for (int value = 0; value < 2; ++value) {
+        b[n][k][value] = operands[operand++];
+      }
+    }
+  }
+
+  float accum[MChains][kCompositeNSlices][4] = {};
+  for (int repeat = 0; repeat < inner; ++repeat) {
+    if constexpr (UseComposite) {
+      // A logical m16n32k64 atom completes both K slices for one M
+      // fragment before advancing to the next independent M fragment.
+#pragma unroll
+      for (int m = 0; m < MChains; ++m) {
+        composite_m16n32k64(accum, a, b, m);
+      }
+    } else {
+      // CuTe's native-atom GEMM keeps K outermost, increasing the distance
+      // between dependent updates when multiple M fragments are live.
+#pragma unroll
+      for (int k = 0; k < kCompositeKSlices; ++k) {
+#pragma unroll
+        for (int n = 0; n < kCompositeNSlices; ++n) {
+#pragma unroll
+          for (int m = 0; m < MChains; ++m) {
+            mma_e4m3_f32(
+                accum[m][n][0], accum[m][n][1], accum[m][n][2],
+                accum[m][n][3], a[m][k][0], a[m][k][1], a[m][k][2],
+                a[m][k][3], b[n][k][0], b[n][k][1]);
+          }
+        }
+      }
+    }
+  }
+
+  float checksum = 0.0f;
+#pragma unroll
+  for (int m = 0; m < MChains; ++m) {
+#pragma unroll
+    for (int n = 0; n < kCompositeNSlices; ++n) {
+      checksum += accum[m][n][0] + accum[m][n][1] + accum[m][n][2] +
+                  accum[m][n][3];
+    }
+  }
+  const size_t index =
+      static_cast<size_t>(blockIdx.x) * blockDim.x + threadIdx.x;
+  output[index] = checksum;
+}
+
 template <typename Launch, typename AfterSample>
 double time_kernel(Launch&& launch, AfterSample&& after_sample, int warmup,
                    int iterations) {
@@ -426,6 +516,57 @@ Result run_raw(const Options& options, int sm_count) {
   return result;
 }
 
+template <bool UseComposite, int MChains>
+Result run_m16n32k64_schedule(const Options& options, int sm_count) {
+  constexpr int operand_count =
+      MChains * kCompositeKSlices * 4 +
+      kCompositeNSlices * kCompositeKSlices * 2;
+  std::array<uint32_t, operand_count> host_operands{};
+  for (int index = 0; index < operand_count; ++index) {
+    const uint8_t base = static_cast<uint8_t>(8 + index % 24);
+    host_operands[index] =
+        static_cast<uint32_t>(base) |
+        (static_cast<uint32_t>(base + 1) << 8) |
+        (static_cast<uint32_t>(base + 2) << 16) |
+        (static_cast<uint32_t>(base + 3) << 24);
+  }
+
+  const int blocks = sm_count * options.blocks_per_sm;
+  const size_t output_count =
+      static_cast<size_t>(blocks) * kThroughputThreads;
+  float* output = nullptr;
+  uint32_t* operands = nullptr;
+  CUDA_CHECK(cudaMalloc(&output, output_count * sizeof(float)));
+  CUDA_CHECK(cudaMalloc(&operands, operand_count * sizeof(uint32_t)));
+  CUDA_CHECK(cudaMemcpy(operands, host_operands.data(),
+                        operand_count * sizeof(uint32_t),
+                        cudaMemcpyHostToDevice));
+
+  auto launch = [&] {
+    m16n32k64_schedule_kernel<UseComposite, MChains>
+        <<<blocks, kThroughputThreads>>>(options.inner, operands, output);
+  };
+
+  Result result;
+  result.label = std::string(UseComposite ? "composite-m" : "native-m") +
+                 std::to_string(MChains);
+  result.launched_blocks = blocks;
+  result.threads = kThroughputThreads;
+  get_kernel_metadata(
+      m16n32k64_schedule_kernel<UseComposite, MChains>,
+      kThroughputThreads, &result.registers, &result.active_blocks_per_sm);
+  result.median_ms =
+      time_kernel(launch, [] {}, options.warmup, options.iterations);
+  result.mma_instructions =
+      static_cast<double>(blocks) * kWarpsPerThroughputBlock * options.inner *
+      MChains * kCompositeNSlices * kCompositeKSlices;
+  finish_rates(&result);
+  result.checksum = validate_output(output, output_count);
+  CUDA_CHECK(cudaFree(operands));
+  CUDA_CHECK(cudaFree(output));
+  return result;
+}
+
 template <bool UseFp16, int FoldMmas>
 Result run_folded(const Options& options, int sm_count) {
   constexpr std::array<uint32_t, 2 * kFoldChains> host_operands = {
@@ -505,7 +646,8 @@ int parse_positive_int(const char* option, const char* value) {
 void print_usage(const char* program) {
   std::cout
       << "Usage: " << program << " [options]\n"
-      << "  --mode all|latency|raw|fold|raw-f16|raw-f32|fold-f16|fold-f32\n"
+      << "  --mode all|latency|raw|fold|composite|raw-f16|raw-f32|"
+         "fold-f16|fold-f32\n"
       << "  --chains 1|2|4|8       single raw-mode chain count (default 4)\n"
       << "  --fold-k 64|128         single fold-mode K interval (default 64)\n"
       << "  --warmup N              warmup launches (default 5)\n"
@@ -559,9 +701,9 @@ Options parse_options(int argc, char** argv) {
     }
   }
 
-  const std::array<std::string, 8> valid_modes = {
-      "all",      "latency", "raw",      "fold",
-      "raw-f16",  "raw-f32", "fold-f16", "fold-f32"};
+  const std::array<std::string, 9> valid_modes = {
+      "all",       "latency",  "raw",      "fold",     "composite",
+      "raw-f16",   "raw-f32",  "fold-f16", "fold-f32"};
   if (std::find(valid_modes.begin(), valid_modes.end(), options.mode) ==
       valid_modes.end()) {
     throw std::runtime_error("invalid --mode: " + options.mode);
@@ -742,6 +884,43 @@ int main(int argc, char** argv) {
               : dispatch_folded<false>(options,
                                        properties.multiProcessorCount);
       print_result(result);
+    }
+
+    if (options.mode == "composite") {
+      std::cout
+          << "\nLOGICAL M16N32K64 SCHEDULE (native CuTe order vs composite)\n";
+      print_result_header();
+      const Result native_m1 =
+          run_m16n32k64_schedule<false, 1>(
+              options, properties.multiProcessorCount);
+      const Result composite_m1 =
+          run_m16n32k64_schedule<true, 1>(
+              options, properties.multiProcessorCount);
+      const Result native_m2 =
+          run_m16n32k64_schedule<false, 2>(
+              options, properties.multiProcessorCount);
+      const Result composite_m2 =
+          run_m16n32k64_schedule<true, 2>(
+              options, properties.multiProcessorCount);
+      const Result native_m4 =
+          run_m16n32k64_schedule<false, 4>(
+              options, properties.multiProcessorCount);
+      const Result composite_m4 =
+          run_m16n32k64_schedule<true, 4>(
+              options, properties.multiProcessorCount);
+      print_result(native_m1);
+      print_result(composite_m1);
+      print_result(native_m2);
+      print_result(composite_m2);
+      print_result(native_m4);
+      print_result(composite_m4);
+      std::cout << std::fixed << std::setprecision(3)
+                << "Native/composite speedup: m1="
+                << native_m1.median_ms / composite_m1.median_ms
+                << "x m2="
+                << native_m2.median_ms / composite_m2.median_ms
+                << "x m4="
+                << native_m4.median_ms / composite_m4.median_ms << "x\n";
     }
 
     CUDA_CHECK(cudaDeviceSynchronize());
