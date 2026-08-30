@@ -90,14 +90,28 @@ def preprocess_qkv(
             return x.contiguous()
         return F.pad(x, (0, 0, 0, pad_len), value=0).contiguous()
     
-    k -= k.mean(dim=-2, keepdim=True)  
+    k = k - k.mean(dim=-2, keepdim=True)
     q, k, v = map(lambda x: pad_128(x), [q, k, v])
     if per_block_mean:
         q, qm = triton_group_mean(q, q_group_size)
     else:
         qm = q.mean(dim=-2, keepdim=True)
         q = q - qm
-    delta_s = torch.matmul(qm, k.transpose(-2, -1)).to(torch.float32).contiguous()
+    if q.size(1) % k.size(1) != 0:
+        raise ValueError("The number of KV heads must divide the number of Q heads")
+    head_ratio = q.size(1) // k.size(1)
+    qm_grouped = qm.reshape(
+        q.size(0),
+        k.size(1),
+        head_ratio,
+        qm.size(2),
+        qm.size(3),
+    )
+    delta_s = torch.matmul(
+        qm_grouped,
+        k.transpose(-2, -1).unsqueeze(2),
+    ).reshape(q.size(0), q.size(1), qm.size(2), k.size(2))
+    delta_s = delta_s.to(torch.float32).contiguous()
     return q, k, v, delta_s
 
 def scale_and_quant_fp4(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -124,6 +138,20 @@ def scale_and_quant_fp4_transpose(x: torch.Tensor) -> Tuple[torch.Tensor, torch.
     fp4quant_cuda.scaled_fp4_quant_trans(x, packed_fp4, fp8_scale, 1)
     return packed_fp4, fp8_scale
 
+def scale_and_quant_fp8_transpose(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    if x.ndim != 4:
+        raise ValueError(f"Expected a 4D tensor, got {x.ndim}D")
+    B, H, N, D = x.shape
+    padded_n = (N + 127) // 128 * 128
+    fp8_v = torch.empty(
+        (B, H, D, padded_n),
+        device=x.device,
+        dtype=torch.float8_e4m3fn,
+    )
+    v_scale = torch.empty((B, H, D), device=x.device, dtype=torch.float32)
+    fp4quant_cuda.scaled_fp8_quant_trans(x, fp8_v, v_scale, 1)
+    return fp8_v, v_scale
+
 def blockscaled_fp4_attn(qlist: Tuple, 
                          klist: Tuple,
                          vlist: Tuple,
@@ -134,7 +162,18 @@ def blockscaled_fp4_attn(qlist: Tuple,
                          is_bf16: bool = True,
                          use_two_cta: bool = False,
                          bypass_p_packing: bool = False,
+                         fp8_pv: bool = False,
+                         fp8_pv_register: bool = False,
                         ):
+    if fp8_pv and fp8_pv_register:
+        raise ValueError(
+            "fp8_pv and fp8_pv_register are mutually exclusive"
+        )
+    use_any_fp8_pv = fp8_pv or fp8_pv_register
+    if use_any_fp8_pv and use_two_cta:
+        raise ValueError("fp8_pv does not support the two-CTA kernel")
+    if use_any_fp8_pv and bypass_p_packing:
+        raise ValueError("fp8_pv is incompatible with bypass_p_packing")
     softmax_scale = (qlist[0].shape[-1] * 2) ** (-0.5)
     return fp4attn_cuda.fwd(
         qlist[0],
@@ -142,7 +181,7 @@ def blockscaled_fp4_attn(qlist: Tuple,
         vlist[0],
         qlist[1],
         klist[1],
-        vlist[1],
+        None if use_any_fp8_pv else vlist[1],
         delta_s,
         KL,
         None,
@@ -152,6 +191,9 @@ def blockscaled_fp4_attn(qlist: Tuple,
         is_bf16,
         use_two_cta,
         bypass_p_packing,
+        fp8_pv,
+        vlist[1] if use_any_fp8_pv else None,
+        fp8_pv_register,
     )
 
 
@@ -165,15 +207,25 @@ def sageattn3_blackwell(
     kernel_variant="baseline",
     **kwargs,
 ):
+    fp8_variants = ("fp8_pv", "fp8_pv_register")
+    if attn_mask is not None and kernel_variant in fp8_variants:
+        raise NotImplementedError("SageAttention 3 does not support attn_mask")
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
         return sdpa(q, k, v, is_causal = is_causal)
     QL = q.size(2)
     KL = k.size(2)
     is_bf16 = q.dtype == torch.bfloat16
-    if kernel_variant not in ("baseline", "two_cta"):
+    if kernel_variant not in ("baseline", "two_cta", *fp8_variants):
         raise ValueError(f"Unknown kernel variant: {kernel_variant}")
     use_two_cta = kernel_variant == "two_cta"
+    use_fp8_pv = kernel_variant == "fp8_pv"
+    use_fp8_pv_register = kernel_variant == "fp8_pv_register"
+    use_any_fp8_pv = use_fp8_pv or use_fp8_pv_register
+    if use_any_fp8_pv and is_causal and QL != KL:
+        raise ValueError(
+            "fp8_pv does not support causal attention with unequal query and key lengths"
+        )
     if use_two_cta and q.size(-1) != 128:
         raise ValueError("The two_cta kernel requires head dimension 128")
     q_group_size = 64 if use_two_cta else 128
@@ -186,7 +238,11 @@ def sageattn3_blackwell(
     )
     qlist_from_cuda = scale_and_quant_fp4(q)
     klist_from_cuda = scale_and_quant_fp4_permute(k)
-    vlist_from_cuda = scale_and_quant_fp4_transpose(v)
+    vlist_from_cuda = (
+        scale_and_quant_fp8_transpose(v)
+        if use_any_fp8_pv
+        else scale_and_quant_fp4_transpose(v)
+    )
     o_fp4 = blockscaled_fp4_attn(
         qlist_from_cuda,
         klist_from_cuda,
@@ -197,5 +253,7 @@ def sageattn3_blackwell(
         per_block_mean,
         is_bf16,
         use_two_cta,
+        fp8_pv=use_fp8_pv,
+        fp8_pv_register=use_fp8_pv_register,
     )[0][:, :, :QL, :].contiguous()
     return o_fp4

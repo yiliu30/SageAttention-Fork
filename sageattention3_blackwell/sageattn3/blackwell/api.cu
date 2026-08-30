@@ -51,7 +51,8 @@ void set_params_fprop(Flash_fwd_params &params,
                       at::Tensor out,
                       const at::Tensor sfq,
                       const at::Tensor sfk,
-                      const at::Tensor sfv,
+                      const c10::optional<at::Tensor> &sfv,
+                      const c10::optional<at::Tensor> &v_scale,
                       void *cu_seqlens_q_d,
                       void *cu_seqlens_k_d,
                       void *seqused_k,
@@ -63,6 +64,7 @@ void set_params_fprop(Flash_fwd_params &params,
                       int window_size_right,
                       bool per_block_mean,
                       bool is_bf16,
+                      bool use_fp8_pv,
                       bool seqlenq_ngroups_swapped=false) {
 
     // Reset the parameters
@@ -74,25 +76,34 @@ void set_params_fprop(Flash_fwd_params &params,
     params.delta_s_ptr = delta_s.data_ptr();
     params.sfq_ptr = sfq.data_ptr();
     params.sfk_ptr = sfk.data_ptr();
-    params.sfv_ptr = sfv.data_ptr();
+    params.sfv_ptr = sfv.has_value() ? sfv->data_ptr() : nullptr;
+    params.v_scale_ptr =
+        v_scale.has_value() ? v_scale->data_ptr() : nullptr;
     
     // All stride are in elements, not bytes.
     params.q_row_stride = q.stride(-2) * 2;
     params.k_row_stride = k.stride(-2) * 2;
-    params.v_row_stride = v.stride(-2) * 2;;
+    params.v_row_stride = v.stride(-2) * (use_fp8_pv ? 1 : 2);
     params.q_head_stride = q.stride(-3) * 2;
     params.k_head_stride = k.stride(-3) * 2;
-    params.v_head_stride = v.stride(-3) * 2; // for packed q k v
+    params.v_head_stride = v.stride(-3) * (use_fp8_pv ? 1 : 2);
 
     params.ds_row_stride = delta_s.stride(-2);
     params.ds_head_stride = delta_s.stride(-3);
     
     params.sfq_row_stride = sfq.stride(-2);
     params.sfk_row_stride = sfk.stride(-2);
-    params.sfv_row_stride = sfv.stride(-2);
     params.sfq_head_stride = sfq.stride(-3);
     params.sfk_head_stride = sfk.stride(-3);
-    params.sfv_head_stride = sfv.stride(-3);
+    if (sfv.has_value()) {
+        params.sfv_row_stride = sfv->stride(-2);
+        params.sfv_head_stride = sfv->stride(-3);
+    }
+    if (v_scale.has_value()) {
+        params.v_scale_batch_stride = v_scale->stride(0);
+        params.v_scale_head_stride = v_scale->stride(1);
+        params.v_scale_row_stride = v_scale->stride(2);
+    }
     params.o_ptr = out.data_ptr();
     params.o_row_stride = out.stride(-2);
     params.o_head_stride = out.stride(-3);
@@ -100,11 +111,13 @@ void set_params_fprop(Flash_fwd_params &params,
     if (cu_seqlens_q_d == nullptr) {
         params.q_batch_stride = q.stride(0) * 2;
         params.k_batch_stride = k.stride(0) * 2;
-        params.v_batch_stride = v.stride(0) * 2;
+        params.v_batch_stride = v.stride(0) * (use_fp8_pv ? 1 : 2);
         params.ds_batch_stride = delta_s.stride(0);
         params.sfq_batch_stride = sfq.stride(0);
         params.sfk_batch_stride = sfk.stride(0);
-        params.sfv_batch_stride = sfv.stride(0);
+        if (sfv.has_value()) {
+            params.sfv_batch_stride = sfv->stride(0);
+        }
         params.o_batch_stride = out.stride(0);
         if (seqlenq_ngroups_swapped) {
              params.q_batch_stride *= seqlen_q;
@@ -179,6 +192,7 @@ void set_params_fprop(Flash_fwd_params &params,
 
     params.is_seqlens_k_cumulative = true;
     params.is_bf16 = is_bf16;
+    params.is_e4m3 = use_fp8_pv;
     #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
         TORCH_CHECK(d == d_rounded, "This flash attention build does not support headdim not being a multiple of 32.");
     #endif
@@ -189,14 +203,17 @@ void run_mha_fwd_dispatch_dtype(
     Flash_fwd_params &params,
     cudaStream_t stream,
     bool use_two_cta,
-    bool bypass_p_packing) {
+    bool bypass_p_packing,
+    bool use_fp8_pv,
+    bool use_fp8_pv_register) {
     using OType = std::conditional_t<IsBF16, cutlass::bfloat16_t, cutlass::half_t>;
     if (params.d == 64) {
         run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 64, OType>(
-            params, stream, false, false);
+            params, stream, false, false, use_fp8_pv, use_fp8_pv_register);
     } else if (params.d == 128) {
         run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 128, OType>(
-            params, stream, use_two_cta, bypass_p_packing);
+            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv,
+            use_fp8_pv_register);
     }
 }
 
@@ -204,10 +221,13 @@ void run_mha_fwd(
     Flash_fwd_params &params,
     cudaStream_t stream,
     bool use_two_cta,
-    bool bypass_p_packing) {
+    bool bypass_p_packing,
+    bool use_fp8_pv,
+    bool use_fp8_pv_register) {
     BOOL_SWITCH(params.is_bf16, IsBF16, ([&] {
         run_mha_fwd_dispatch_dtype<IsBF16>(
-            params, stream, use_two_cta, bypass_p_packing);
+            params, stream, use_two_cta, bypass_p_packing, use_fp8_pv,
+            use_fp8_pv_register);
     }));
 }
 
@@ -217,7 +237,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
         const at::Tensor &v,         // batch_size x seqlen_k x num_heads_k x (head_size // 2)
         const at::Tensor &sfq,
         const at::Tensor &sfk,
-        const at::Tensor &sfv,
+        const c10::optional<at::Tensor> &sfv,
         const at::Tensor &delta_s,
         int unpadded_k,
         c10::optional<at::Tensor> &out_,             // batch_size x seqlen_q x num_heads x head_size
@@ -226,25 +246,75 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
         bool per_block_mean,
         bool is_bf16,
         bool use_two_cta,
-        bool bypass_p_packing
+        bool bypass_p_packing,
+        bool use_fp8_pv,
+        const c10::optional<at::Tensor> &v_scale,
+        bool use_fp8_pv_register
     ) {
 
+    at::cuda::CUDAGuard device_guard{(char)q.get_device()};
     auto dprops = at::cuda::getCurrentDeviceProperties();
     bool is_sm120 = dprops->major == 12 && dprops->minor == 0;
     bool is_sm121 = dprops->major == 12 && dprops->minor == 1;
     TORCH_CHECK(is_sm120 || is_sm121, "only supports Blackwell GPUs or newer.");
+    TORCH_CHECK(
+        !use_fp8_pv_register || !use_fp8_pv,
+        "FP8 P x V shared exchange and register remap are mutually exclusive");
+    bool const use_any_fp8_pv = use_fp8_pv || use_fp8_pv_register;
 
-    auto q_dtype = q.dtype();
-    auto sfq_dtype = sfq.dtype();
+    auto q_dtype = q.scalar_type();
+    auto sfq_dtype = sfq.scalar_type();
     TORCH_CHECK(q_dtype == torch::kUInt8, "q dtype must be uint8");
-    TORCH_CHECK(k.dtype() == q_dtype, "query and key must have the same dtype");
-    TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
+    TORCH_CHECK(k.scalar_type() == q_dtype, "query and key must have the same dtype");
+    TORCH_CHECK(
+        v.scalar_type() ==
+            (use_any_fp8_pv ? torch::kFloat8_e4m3fn : q_dtype),
+        use_any_fp8_pv ? "value must have dtype float8_e4m3fn"
+                       : "query and value must have the same dtype");
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
+    CHECK_DEVICE(delta_s);
 
-    TORCH_CHECK(sfq_dtype == torch::kFloat8_e4m3fn, "q dtype must be uint8");
-    TORCH_CHECK(sfk.dtype() == sfq_dtype, "query and key must have the same dtype");
-    TORCH_CHECK(sfv.dtype() == sfq_dtype, "query and value must have the same dtype");
-    CHECK_DEVICE(sfq); CHECK_DEVICE(sfk); CHECK_DEVICE(sfv);
+    TORCH_CHECK(
+        sfq_dtype == torch::kFloat8_e4m3fn,
+        "Q scale dtype must be float8_e4m3fn");
+    TORCH_CHECK(sfk.scalar_type() == sfq_dtype, "query and key must have the same dtype");
+    CHECK_DEVICE(sfq); CHECK_DEVICE(sfk);
+    if (use_any_fp8_pv) {
+        TORCH_CHECK(
+            !sfv.has_value(),
+            "FP8 P x V does not use FP4 V block scales");
+        TORCH_CHECK(v_scale.has_value(), "FP8 P x V requires v_scale");
+        CHECK_DEVICE(v_scale.value());
+        TORCH_CHECK(
+            v_scale->scalar_type() == torch::kFloat32,
+            "v_scale dtype must be float32");
+    } else {
+        TORCH_CHECK(sfv.has_value(), "NVFP4 P x V requires sfv");
+        TORCH_CHECK(
+            sfv->scalar_type() == sfq_dtype,
+            "query and value scales must have the same dtype");
+        CHECK_DEVICE(sfv.value());
+        TORCH_CHECK(
+            !v_scale.has_value(),
+            "v_scale is only supported by FP8 P x V");
+    }
+    TORCH_CHECK(
+        q.get_device() == k.get_device() &&
+            q.get_device() == v.get_device() &&
+            q.get_device() == sfq.get_device() &&
+            q.get_device() == sfk.get_device() &&
+            q.get_device() == delta_s.get_device(),
+        "all attention inputs must be on the same CUDA device");
+    if (sfv.has_value()) {
+        TORCH_CHECK(
+            q.get_device() == sfv->get_device(),
+            "sfv must be on the same CUDA device as q");
+    }
+    if (v_scale.has_value()) {
+        TORCH_CHECK(
+            q.get_device() == v_scale->get_device(),
+            "v_scale must be on the same CUDA device as q");
+    }
     
     TORCH_CHECK(q.stride(-1) == 1, "Input tensor must have contiguous last dimension");
     TORCH_CHECK(k.stride(-1) == 1, "Input tensor must have contiguous last dimension");
@@ -266,14 +336,17 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     const int num_heads_k = k.size(1);
     
     TORCH_CHECK(batch_size > 0, "batch size must be postive");
-    TORCH_CHECK(unpacked_head_size <= 256, "FlashAttention forward only supports head dimension at most 256");
     TORCH_CHECK(num_heads % num_heads_k == 0, "Number of heads in key/value must divide number of heads in query");
-    TORCH_CHECK(num_heads == num_heads_k, "We do not support MQA/GQA yet");
 
-    TORCH_CHECK(unpacked_head_size == 64 || unpacked_head_size == 128 || unpacked_head_size == 256, "Only support head size 64, 128, and 256 for now");
+    TORCH_CHECK(unpacked_head_size == 64 || unpacked_head_size == 128, "Only support head size 64 and 128");
     TORCH_CHECK(!use_two_cta || unpacked_head_size == 128, "The two-CTA kernel requires head dimension 128");
     TORCH_CHECK(!bypass_p_packing || unpacked_head_size == 128, "The P-packing ablation requires head dimension 128");
     TORCH_CHECK(!bypass_p_packing || !use_two_cta, "The P-packing ablation only supports the baseline kernel");
+    TORCH_CHECK(!use_any_fp8_pv || !use_two_cta, "FP8 P x V does not support the two-CTA kernel");
+    TORCH_CHECK(!use_any_fp8_pv || !bypass_p_packing, "FP8 P x V is incompatible with bypass_p_packing");
+    TORCH_CHECK(
+        !use_any_fp8_pv || !is_causal || seqlen_q == seqlen_k,
+        "FP8 P x V does not support causal attention with unequal query and key lengths");
     if (bypass_p_packing) {
         TORCH_WARN_ONCE(
             "bypass_p_packing is a performance diagnostic and returns "
@@ -282,7 +355,19 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
 
     CHECK_SHAPE(q, batch_size, num_heads, seqlen_q, head_size_og);
     CHECK_SHAPE(k, batch_size, num_heads_k, seqlen_k, head_size_og);
-    CHECK_SHAPE(v, batch_size, num_heads_k, unpacked_head_size, seqlen_k/2);
+    if (use_any_fp8_pv) {
+        CHECK_SHAPE(v, batch_size, num_heads_k, unpacked_head_size, seqlen_k);
+        CHECK_SHAPE(
+            v_scale.value(),
+            batch_size,
+            num_heads_k,
+            unpacked_head_size);
+        TORCH_CHECK(
+            v_scale->is_contiguous(),
+            "v_scale must be contiguous");
+    } else {
+        CHECK_SHAPE(v, batch_size, num_heads_k, unpacked_head_size, seqlen_k/2);
+    }
     const int query_block_size = use_two_cta ? 64 : 128;
     const int delta_s_rows = per_block_mean ? seqlen_q / query_block_size : 1;
     CHECK_SHAPE(delta_s, batch_size, num_heads, delta_s_rows, seqlen_k);
@@ -300,12 +385,6 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     const int seqlen_q_rounded = round_multiple(seqlen_q, 128);
     const int seqlen_k_rounded = round_multiple(seqlen_k, 128);
 
-    // Otherwise the kernel will be launched from cuda:0 device
-    // Cast to char to avoid compiler warning about narrowing
-    at::cuda::CUDAGuard device_guard{(char)q.get_device()};
-
-    
-
     auto softmax_lse = torch::empty({batch_size, num_heads, seqlen_q}, opts.dtype(at::kFloat));
     at::Tensor p;
 
@@ -317,7 +396,7 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
                      num_heads, num_heads_k,
                      unpacked_head_size, unpacked_head_size,
                      q, k, v, delta_s, out, 
-                     sfq, sfk, sfv,
+                     sfq, sfk, sfv, v_scale,
                      /*cu_seqlens_q_d=*/nullptr,
                      /*cu_seqlens_k_d=*/nullptr,
                      /*seqused_k=*/nullptr,
@@ -328,7 +407,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
                      /*window_size_left=*/-1,
                      /*window_size_right=*/is_causal ? 0 : -1,
                      per_block_mean,
-                     is_bf16
+                     is_bf16,
+                     use_any_fp8_pv
                     );
     // TODO: 132 sm count?
     auto tile_count_semaphore = is_causal ? torch::full({1}, 132, opts.dtype(torch::kInt32)) : torch::empty({1}, opts.dtype(torch::kInt32));
@@ -336,7 +416,13 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
 
     if (seqlen_k > 0) {
         auto stream = at::cuda::getCurrentCUDAStream().stream();
-        run_mha_fwd(params, stream, use_two_cta, bypass_p_packing);
+        run_mha_fwd(
+            params,
+            stream,
+            use_two_cta,
+            bypass_p_packing,
+            use_any_fp8_pv,
+            use_fp8_pv_register);
     } else {
         // If seqlen_k == 0, then we have an empty tensor. We need to set the output to 0.
         out.zero_();
@@ -378,5 +464,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
         pybind11::arg("per_block_mean"),
         pybind11::arg("is_bf16"),
         pybind11::arg("use_two_cta") = false,
-        pybind11::arg("bypass_p_packing") = false);
+        pybind11::arg("bypass_p_packing") = false,
+        pybind11::arg("use_fp8_pv") = false,
+        pybind11::arg("v_scale") = c10::nullopt,
+        pybind11::arg("use_fp8_pv_register") = false);
 }

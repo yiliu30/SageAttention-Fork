@@ -33,7 +33,8 @@ using namespace cute;
 template <
     int kStages,
     int EpiStages,
-    typename Element,
+    typename ElementQK,
+    typename ElementV,
     typename ElementSF,
     typename OutputType,
     typename SmemLayoutQ,
@@ -47,13 +48,13 @@ template <
 >
 struct SharedStorageQKVOwithSF : cute::aligned_struct<128, _0>{
     
-    alignas(1024) cute::ArrayEngine<Element, cute::cosize_v<SmemLayoutQ>> smem_q;
-    alignas(1024) cute::ArrayEngine<Element, cute::cosize_v<SmemLayoutK>> smem_k;
+    alignas(1024) cute::ArrayEngine<ElementQK, cute::cosize_v<SmemLayoutQ>> smem_q;
+    alignas(1024) cute::ArrayEngine<ElementQK, cute::cosize_v<SmemLayoutK>> smem_k;
     cute::ArrayEngine<ElementSF, cute::cosize_v<SmemLayoutSFQ>> smem_SFQ;
     cute::ArrayEngine<ElementSF, cute::cosize_v<SmemLayoutSFK>> smem_SFK;
     cute::ArrayEngine<ElementSF, cute::cosize_v<SmemLayoutSFV>> smem_SFV;
     alignas(1024) cute::ArrayEngine<float, cute::cosize_v<SmemLayoutDS>> smem_ds;
-    alignas(1024) cute::ArrayEngine<Element, cute::cosize_v<SmemLayoutV>> smem_v;
+    alignas(1024) cute::ArrayEngine<ElementV, cute::cosize_v<SmemLayoutV>> smem_v;
     alignas(1024) cute::ArrayEngine<OutputType, cute::cosize_v<SmemLayoutO>> smem_o;
     
     struct {
@@ -64,6 +65,39 @@ struct SharedStorageQKVOwithSF : cute::aligned_struct<128, _0>{
         int tile_count_semaphore;
     };
   };
+
+template <
+    int kStages,
+    int EpiStages,
+    typename ElementQK,
+    typename ElementV,
+    typename ElementSF,
+    typename OutputType,
+    typename SmemLayoutQ,
+    typename SmemLayoutK,
+    typename SmemLayoutV,
+    typename SmemLayoutDS,
+    typename SmemLayoutO,
+    typename SmemLayoutSFQ,
+    typename SmemLayoutSFK
+>
+struct SharedStorageQKVOFp8 : cute::aligned_struct<128, _0>{
+    alignas(1024) cute::ArrayEngine<ElementQK, cute::cosize_v<SmemLayoutQ>> smem_q;
+    alignas(1024) cute::ArrayEngine<ElementQK, cute::cosize_v<SmemLayoutK>> smem_k;
+    cute::ArrayEngine<ElementSF, cute::cosize_v<SmemLayoutSFQ>> smem_SFQ;
+    cute::ArrayEngine<ElementSF, cute::cosize_v<SmemLayoutSFK>> smem_SFK;
+    alignas(1024) cute::ArrayEngine<float, cute::cosize_v<SmemLayoutDS>> smem_ds;
+    alignas(1024) cute::ArrayEngine<ElementV, cute::cosize_v<SmemLayoutV>> smem_v;
+    alignas(1024) cute::ArrayEngine<OutputType, cute::cosize_v<SmemLayoutO>> smem_o;
+
+    struct {
+        alignas(16) typename cutlass::PipelineTmaAsync<1>::SharedStorage pipeline_q;
+        alignas(16) typename cutlass::PipelineTmaAsync<kStages>::SharedStorage pipeline_k;
+        alignas(16) typename cutlass::PipelineTmaAsync<kStages>::SharedStorage pipeline_v;
+        alignas(16) typename flash::OrderedSequenceBarrierVarGroupSize<EpiStages, 2>::SharedStorage barrier_o;
+        int tile_count_semaphore;
+    };
+};
 
 template <
     int kHeadDim_, 
@@ -77,7 +111,9 @@ template <
     int kMinBlocksPerSm_ = 1,
     int kProducerRegisters_ = 24,
     int kConsumerRegisters_ = 232,
-    bool kBypassPPacking_ = false
+    bool kBypassPPacking_ = false,
+    bool kUseFp8PV_ = false,
+    bool kUseFp8PVRegisterRemap_ = false
 >
 struct Flash_fwd_kernel_traits {
     static constexpr int kBlockM = kBlockM_;
@@ -95,11 +131,17 @@ struct Flash_fwd_kernel_traits {
     static constexpr int kProducerRegisters = kProducerRegisters_;
     static constexpr int kConsumerRegisters = kConsumerRegisters_;
     static constexpr bool kBypassPPacking = kBypassPPacking_;
+    static constexpr bool kUseFp8PV = kUseFp8PV_;
+    static constexpr bool kUseFp8PVRegisterRemap =
+        kUseFp8PVRegisterRemap_;
+    static_assert(!kUseFp8PVRegisterRemap || kUseFp8PV);
     static constexpr int EpiStages = 1;
     static constexpr int NumSFQK = kHeadDim / 16;
     static constexpr int NumSFPV = kBlockN / 16;
     using ElementSF = cutlass::float_ue4m3_t;
     using Element = cutlass::float_e2m1_t;
+    using ElementV = std::conditional_t<kUseFp8PV, cutlass::float_e4m3_t, Element>;
+    using ElementP = ElementV;
     using ElementAccum = float;
     using ElementOut = ElementOut_;
     using index_t = int64_t;
@@ -123,11 +165,23 @@ struct Flash_fwd_kernel_traits {
         Tile<PermTileM, PermTileN, PermTileK>{}
       ));
     
-    using TiledMmaPV = decltype(cute::make_tiled_mma(
+    using TiledMmaPVBlockscaled = decltype(cute::make_tiled_mma(
         cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4{},
         AtomLayoutMNK{},
         Tile<PermTileM, _32, PermTileK>{}
       ));
+    using TiledMmaPVFp8 = decltype(cute::make_tiled_mma(
+        cute::SM120_16x8x32_TN<
+            cutlass::float_e4m3_t,
+            cutlass::float_e4m3_t,
+            float>{},
+        AtomLayoutMNK{},
+        Tile<PermTileM, _32, _32>{}
+      ));
+    using TiledMmaPV = std::conditional_t<
+        kUseFp8PV,
+        TiledMmaPVFp8,
+        TiledMmaPVBlockscaled>;
     
     static constexpr int MMA_NSF = size<2>(typename TiledMmaQK::AtomShape_MNK{}) / SFVectorSize;
 
@@ -136,8 +190,9 @@ struct Flash_fwd_kernel_traits {
 
     using SmemLayoutAtomQ = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<Element, decltype(size<2>(TileShape_MNK{}))>());
     using SmemLayoutAtomK = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<Element, decltype(size<2>(TileShape_MNK{}))>());
-    using SmemLayoutAtomV = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<Element, decltype(size<2>(TileShape_MNK{}))>());
-    using SmemLayoutAtomVt = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<Element, decltype(size<1>(TileShape_MNK{}))>());
+    using SmemLayoutAtomV = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<ElementV, decltype(size<2>(TileShape_MNK{}))>());
+    using SmemLayoutAtomVt = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<ElementV, decltype(size<1>(TileShape_MNK{}))>());
+    using SmemLayoutAtomP = decltype(cutlass::gemm::collective::detail::sm120_rr_smem_selector<ElementP, decltype(size<1>(TileShape_MNK{}))>());
     using SmemLayoutQ = decltype(tile_to_shape(SmemLayoutAtomQ{}, select<0, 2>(TileShape_MNK{})));
     using SmemLayoutK =
         decltype(tile_to_shape(SmemLayoutAtomK{},
@@ -148,13 +203,17 @@ struct Flash_fwd_kernel_traits {
     using SmemLayoutVt =
         decltype(tile_to_shape(SmemLayoutAtomVt{},
                  make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{}), Int<kStages>{})));
+    using SmemLayoutP =
+        decltype(tile_to_shape(SmemLayoutAtomP{}, select<0, 1>(TileShape_MNK{})));
     using SmemLayoutAtomDS = Layout<Shape<Int<kBlockM>, Int<kBlockN>>, Stride<_0, _1>>;
     using SmemLayoutDS = 
         decltype(tile_to_shape(SmemLayoutAtomDS{},
             make_shape(shape<0>(TileShape_MNK{}), shape<1>(TileShape_MNK{}), Int<kStages>{})));
 
     using SmemCopyAtomQ = Copy_Atom<SM75_U32x4_LDSM_N, Element>;
-    using SmemCopyAtomKV = Copy_Atom<SM75_U32x4_LDSM_N, Element>;
+    using SmemCopyAtomK = Copy_Atom<SM75_U32x4_LDSM_N, Element>;
+    using SmemCopyAtomV = Copy_Atom<SM75_U32x4_LDSM_N, ElementV>;
+    using SmemCopyAtomP = Copy_Atom<SM75_U32x4_LDSM_N, ElementP>;
     using SmemCopyAtomSF = Copy_Atom<UniversalCopy<ElementSF>, ElementSF>;
     using SmemCopyAtomDS = Copy_Atom<UniversalCopy<float>, float>;
 
@@ -163,8 +222,8 @@ struct Flash_fwd_kernel_traits {
     using SfAtom = typename BlkScaledConfig::SfAtom;
     using SmemLayoutAtomSFQ = decltype(BlkScaledConfig::deduce_smem_layoutSFQ(TiledMmaQK{}, TileShape_MNK{}));
     using SmemLayoutAtomSFK = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaQK{}, TileShape_MNK{}));
-    using SmemLayoutAtomSFV = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaPV{}, TileShape_MNK{}));
-    using SmemLayoutAtomSFVt = decltype(BlkScaledConfig::deduce_smem_layoutSFVt(TiledMmaPV{}, Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>{}));
+    using SmemLayoutAtomSFV = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaPVBlockscaled{}, TileShape_MNK{}));
+    using SmemLayoutAtomSFVt = decltype(BlkScaledConfig::deduce_smem_layoutSFVt(TiledMmaPVBlockscaled{}, Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>{}));
     using LayoutSFP = decltype(
       make_layout(
           make_shape(make_shape(_16{}, _4{}), _1{}, Int<kBlockN / 64>{}),
@@ -197,9 +256,16 @@ struct Flash_fwd_kernel_traits {
     using SmemLayoutAtomO = decltype(cutlass::gemm::collective::detail::ss_smem_selector<GMMA::Major::K, ElementOut,
         decltype(cute::get<0>(TileShape_MNK{})), decltype(cute::get<2>(TileShape_MNK{}))>());
     using SmemLayoutO = decltype(tile_to_shape(SmemLayoutAtomO{}, select<0, 2>(TileShape_MNK{}), Step<_1, _2>{}));
-    using SharedStorage = SharedStorageQKVOwithSF<kStages, EpiStages, Element, ElementSF, ElementOut,
-        SmemLayoutQ, SmemLayoutK, SmemLayoutV, SmemLayoutDS, 
-        SmemLayoutO, SmemLayoutSFQ, SmemLayoutSFK, SmemLayoutSFVt>;
+    using SharedStorage = std::conditional_t<
+        kUseFp8PV,
+        SharedStorageQKVOFp8<
+            kStages, EpiStages, Element, ElementV, ElementSF, ElementOut,
+            SmemLayoutQ, SmemLayoutK, SmemLayoutV, SmemLayoutDS,
+            SmemLayoutO, SmemLayoutSFQ, SmemLayoutSFK>,
+        SharedStorageQKVOwithSF<
+            kStages, EpiStages, Element, ElementV, ElementSF, ElementOut,
+            SmemLayoutQ, SmemLayoutK, SmemLayoutV, SmemLayoutDS,
+            SmemLayoutO, SmemLayoutSFQ, SmemLayoutSFK, SmemLayoutSFVt>>;
     using MainloopPipeline = typename cutlass::PipelineTmaAsync<kStages>;
     using PipelineState = typename cutlass::PipelineState<kStages>;
     using MainloopPipelineQ = cutlass::PipelineTmaAsync<1>;

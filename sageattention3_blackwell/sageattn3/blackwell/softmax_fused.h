@@ -32,6 +32,7 @@ struct SoftmaxFused{
     static constexpr float fp8_scalexfp4_scale = 1.f / (448 * 6);
     static constexpr float fp8_scalexfp4_scale_log2 = -11.392317422778762f; //log2f(fp8_scalexfp4_scale)
     static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(fp4_scale)
+    static constexpr float fp8_scale_log2 = 8.807354922057604f; // log2f(448)
     static constexpr int RowReductionThr = 4;
 
     CUTLASS_DEVICE SoftmaxFused(){};
@@ -63,7 +64,7 @@ struct SoftmaxFused{
                     AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), max_recv);
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
-                
+
                 float max_recv = __shfl_xor_sync(int32_t(-1), row_max(mi), 2); // exchange max in a quad in a row
                 row_max(mi) = fmaxf(row_max(mi), max_recv);
 
@@ -133,6 +134,66 @@ struct SoftmaxFused{
             CUTLASS_PRAGMA_UNROLL
             for (int j = 0; j < size<0>(acc_conversion_flatten); ++j)
                 acc_conversion_flatten(j, i) /= AbsMaxP(i);
+        }
+    }
+
+    template<bool FirstTile, bool InfCheck = true, typename TensorAcc>
+    CUTLASS_DEVICE void online_softmax_fp8(
+        TensorAcc& acc,
+        const float softmax_scale_log2
+    ) {
+        Tensor acc_reduction_view = make_tensor(
+            acc.data(),
+            flash::convert_to_reduction_layout(acc.layout()));
+        Tensor scores_max_prev = make_fragment_like(row_max);
+
+        if constexpr (FirstTile) {
+            fill(row_max, -INFINITY);
+            clear(row_sum);
+            fill(scores_scale, 1.f);
+        } else {
+            cute::copy(row_max, scores_max_prev);
+        }
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int mi = 0; mi < size<0>(acc_reduction_view); ++mi) {
+            float local_max = -INFINITY;
+            CUTLASS_PRAGMA_UNROLL
+            for (int ni = 0; ni < size<1>(acc_reduction_view); ++ni) {
+                local_max = fmaxf(local_max, acc_reduction_view(mi, ni));
+            }
+            local_max = fmaxf(
+                local_max,
+                __shfl_xor_sync(int32_t(-1), local_max, 1));
+            local_max = fmaxf(
+                local_max,
+                __shfl_xor_sync(int32_t(-1), local_max, 2));
+            row_max(mi) = fmaxf(row_max(mi), local_max);
+
+            float current_max = row_max(mi);
+            if constexpr (InfCheck) {
+                current_max = current_max == -INFINITY ? 0.f : current_max;
+            }
+            if constexpr (!FirstTile) {
+                float previous_max = scores_max_prev(mi);
+                if constexpr (InfCheck) {
+                    previous_max =
+                        previous_max == -INFINITY ? 0.f : previous_max;
+                }
+                scores_scale(mi) = flash::ptx_exp2(
+                    (previous_max - current_max) * softmax_scale_log2);
+                row_sum(mi) *= scores_scale(mi);
+            }
+
+            const float max_scaled =
+                current_max * softmax_scale_log2 - fp8_scale_log2;
+            CUTLASS_PRAGMA_UNROLL
+            for (int ni = 0; ni < size<1>(acc_reduction_view); ++ni) {
+                acc_reduction_view(mi, ni) = flash::ptx_exp2(
+                    acc_reduction_view(mi, ni) * softmax_scale_log2 -
+                    max_scaled);
+                row_sum(mi) += acc_reduction_view(mi, ni);
+            }
         }
     }
 

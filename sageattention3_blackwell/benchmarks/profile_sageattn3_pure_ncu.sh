@@ -7,9 +7,9 @@ ncu="/home/yiliu7/workspace/tools/nsight-compute-2026.2.1/opt/nvidia/nsight-comp
 report_dir="${HOME}/.local/state/sageattention3"
 kernel_variant="${1:-baseline}"
 case "${kernel_variant}" in
-  baseline|two_cta|p_pack_bypass) ;;
+  baseline|two_cta|p_pack_bypass|fp8_pv|fp8_pv_register) ;;
   *)
-    echo "usage: $0 [baseline|two_cta|p_pack_bypass]" >&2
+    echo "usage: $0 [baseline|two_cta|p_pack_bypass|fp8_pv|fp8_pv_register]" >&2
     exit 2
     ;;
 esac

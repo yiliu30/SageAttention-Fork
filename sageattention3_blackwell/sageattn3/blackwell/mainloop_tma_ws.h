@@ -32,10 +32,143 @@ namespace flash {
 
 using namespace cute;
 
+struct NoTmaCopy {};
+
+struct Fp8PVRegisterRemap {
+    CUTE_HOST_DEVICE
+    static constexpr int qk_col_to_logical(int col) {
+        int const block = col / 32;
+        int const local = col % 32;
+        return block * 32 + (local / 8) * 2 +
+            ((local % 8) / 2) * 8 + local % 2;
+    }
+
+    template <typename TiledMmaQK, typename TiledMmaPV>
+    CUTE_HOST_DEVICE
+    static constexpr bool validates_atom_layout() {
+        using QKCLayout = typename TiledMmaQK::Atom::Traits::CLayout;
+        using PVALayout = typename TiledMmaPV::Atom::Traits::ALayout;
+        QKCLayout qk_layout;
+        PVALayout pv_layout;
+
+        for (int destination_lane = 0; destination_lane < 32;
+             ++destination_lane) {
+            int const destination_t0 = destination_lane % 4;
+            int const t1 = destination_lane / 4;
+            for (int destination_register = 0;
+                 destination_register < 4;
+                 ++destination_register) {
+                int const row_select = destination_register % 2;
+                int const k_select = destination_register / 2;
+                int const source_t0 =
+                    2 * k_select + destination_t0 / 2;
+                int const source_lane = 4 * t1 + source_t0;
+                int const source_index =
+                    4 * (destination_t0 % 2) + 8 * row_select;
+
+                for (int byte = 0; byte < 4; ++byte) {
+                    int const qk_linear =
+                        qk_layout(source_lane, source_index + byte);
+                    int const pv_linear =
+                        pv_layout(
+                            destination_lane,
+                            4 * destination_register + byte);
+                    int const qk_row = qk_linear % 16;
+                    int const qk_col =
+                        qk_col_to_logical(qk_linear / 16);
+                    int const pv_row = pv_linear % 16;
+                    int const pv_col = pv_linear / 16;
+                    if (qk_row != pv_row || qk_col != pv_col) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    template <typename TensorScores, typename TensorP>
+    CUTLASS_DEVICE
+    static void convert(
+        TensorScores const& scores,
+        TensorP& p,
+        uint32_t peer_mask) {
+        CUTE_STATIC_ASSERT_V(size<0>(scores) == _16{});
+        CUTE_STATIC_ASSERT_V(size<1>(scores) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(scores) == _4{});
+        CUTE_STATIC_ASSERT_V(size<0>(p) == _16{});
+        CUTE_STATIC_ASSERT_V(size<1>(p) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(p) == _4{});
+
+        Tensor packed_p = recast<uint32_t>(p);
+        CUTE_STATIC_ASSERT_V(size<0>(packed_p) == _4{});
+        CUTE_STATIC_ASSERT_V(size<1>(packed_p) == _1{});
+        CUTE_STATIC_ASSERT_V(size<2>(packed_p) == _4{});
+
+        cutlass::NumericArrayConverter<
+            cutlass::float_e4m3_t,
+            float,
+            4> convert_p;
+        auto pack_source = [&](int source_index, int k_tile) {
+            cutlass::Array<float, 4> source;
+            CUTLASS_PRAGMA_UNROLL
+            for (int byte = 0; byte < 4; ++byte) {
+                source[byte] =
+                    scores(source_index + byte + 16 * k_tile);
+            }
+            auto converted = convert_p(source);
+            static_assert(sizeof(converted) == sizeof(uint32_t));
+            return *converted.raw_data();
+        };
+
+        int const lane = threadIdx.x % cutlass::NumThreadsPerWarp;
+        int const destination_t0 = lane % 4;
+        int const source_t0_first_half = destination_t0 / 2;
+        int const source_t0_second_half = source_t0_first_half + 2;
+        bool const use_high_source_values = destination_t0 % 2 != 0;
+
+        CUTLASS_PRAGMA_UNROLL
+        for (int k_tile = 0; k_tile < 4; ++k_tile) {
+            uint32_t const row0_low = pack_source(0, k_tile);
+            uint32_t const row0_high = pack_source(4, k_tile);
+            uint32_t const row1_low = pack_source(8, k_tile);
+            uint32_t const row1_high = pack_source(12, k_tile);
+
+            uint32_t const first_row0_low = __shfl_sync(
+                peer_mask, row0_low, source_t0_first_half, 4);
+            uint32_t const first_row0_high = __shfl_sync(
+                peer_mask, row0_high, source_t0_first_half, 4);
+            uint32_t const first_row1_low = __shfl_sync(
+                peer_mask, row1_low, source_t0_first_half, 4);
+            uint32_t const first_row1_high = __shfl_sync(
+                peer_mask, row1_high, source_t0_first_half, 4);
+            uint32_t const second_row0_low = __shfl_sync(
+                peer_mask, row0_low, source_t0_second_half, 4);
+            uint32_t const second_row0_high = __shfl_sync(
+                peer_mask, row0_high, source_t0_second_half, 4);
+            uint32_t const second_row1_low = __shfl_sync(
+                peer_mask, row1_low, source_t0_second_half, 4);
+            uint32_t const second_row1_high = __shfl_sync(
+                peer_mask, row1_high, source_t0_second_half, 4);
+
+            packed_p(0, 0, k_tile) =
+                use_high_source_values ? first_row0_high : first_row0_low;
+            packed_p(1, 0, k_tile) =
+                use_high_source_values ? first_row1_high : first_row1_low;
+            packed_p(2, 0, k_tile) =
+                use_high_source_values ? second_row0_high : second_row0_low;
+            packed_p(3, 0, k_tile) =
+                use_high_source_values ? second_row1_high : second_row1_low;
+        }
+    }
+};
+
 template <typename Ktraits, bool Is_causal>
 struct CollectiveMainloopFwd {
 
     using Element = typename Ktraits::Element;
+    using ElementV = typename Ktraits::ElementV;
+    using ElementP = typename Ktraits::ElementP;
     using ElementSF = typename Ktraits::ElementSF;
     // using TMAElement = Element;
     // using TMAElementSF = typename Ktraits::ElementSF;
@@ -50,6 +183,7 @@ struct CollectiveMainloopFwd {
     using SmemLayoutK = typename Ktraits::SmemLayoutK;
     using SmemLayoutV = typename Ktraits::SmemLayoutV;
     using SmemLayoutVt = typename Ktraits::SmemLayoutVt;
+    using SmemLayoutP = typename Ktraits::SmemLayoutP;
     using SmemLayoutDS = typename Ktraits::SmemLayoutDS;
     using SmemLayoutAtomDS = typename Ktraits::SmemLayoutAtomDS;
     using LayoutDS = decltype(
@@ -74,7 +208,7 @@ struct CollectiveMainloopFwd {
         select<0, 2>(TileShape_MNK{}),
         _1{}));
 
-    using TMA_KV = decltype(make_tma_copy(
+    using TMA_K = decltype(make_tma_copy(
         GmemTiledCopy{},
         make_tensor(make_gmem_ptr(static_cast<Element const*>(nullptr)), repeat_like(StrideQKV{}, int32_t(0)), StrideQKV{}),
         take<0, 2>(SmemLayoutK{}),
@@ -83,7 +217,7 @@ struct CollectiveMainloopFwd {
     
     using TMA_Vt = decltype(make_tma_copy(
         GmemTiledCopy{},
-        make_tensor(make_gmem_ptr(static_cast<Element const*>(nullptr)), repeat_like(StrideQKV{}, int32_t(0)), StrideQKV{}),
+        make_tensor(make_gmem_ptr(static_cast<ElementV const*>(nullptr)), repeat_like(StrideQKV{}, int32_t(0)), StrideQKV{}),
         take<0, 2>(SmemLayoutVt{}),
         make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})),
         _1{})); 
@@ -117,15 +251,21 @@ struct CollectiveMainloopFwd {
         make_shape(shape<1>(TileShape_MNK{}), shape<2>(TileShape_MNK{})),
         _1{}));
 
-    using TMA_SFVt = decltype(make_tma_copy<uint16_t>(
+    using TMA_SFVtBlockscaled = decltype(make_tma_copy<uint16_t>(
         GmemTiledCopySF{},
         make_tensor(static_cast<ElementSF const*>(nullptr), LayoutSF{}),
         SmemLayoutSFVt{}(_,_,cute::Int<0>{}),
         make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})),
         _1{}));
+    using TMA_SFVt = std::conditional_t<
+        Ktraits::kUseFp8PV,
+        NoTmaCopy,
+        TMA_SFVtBlockscaled>;
 
     using SmemCopyAtomQ = typename Ktraits::SmemCopyAtomQ;
-    using SmemCopyAtomKV = typename Ktraits::SmemCopyAtomKV;
+    using SmemCopyAtomK = typename Ktraits::SmemCopyAtomK;
+    using SmemCopyAtomV = typename Ktraits::SmemCopyAtomV;
+    using SmemCopyAtomP = typename Ktraits::SmemCopyAtomP;
     using SmemCopyAtomSF = typename Ktraits::SmemCopyAtomSF;
     using TiledMmaQK = typename Ktraits::TiledMmaQK;
     using TiledMmaPV = typename Ktraits::TiledMmaPV;
@@ -149,8 +289,10 @@ struct CollectiveMainloopFwd {
         cutlass::bits_to_bytes(size(take<0,2>(SmemLayoutK{})) * sizeof_bits<Element>::value));
     
     static constexpr uint32_t TmaTransactionBytesV = static_cast<uint32_t>(
-        cutlass::bits_to_bytes(cosize(take<0,2>(SmemLayoutSFVt{})) * cute::sizeof_bits_v<ElementSF>) +
-        cutlass::bits_to_bytes(size(take<0,2>(SmemLayoutVt{})) * sizeof_bits<Element>::value));
+        (Ktraits::kUseFp8PV
+            ? 0
+            : cutlass::bits_to_bytes(cosize(take<0,2>(SmemLayoutSFVt{})) * cute::sizeof_bits_v<ElementSF>)) +
+        cutlass::bits_to_bytes(size(take<0,2>(SmemLayoutVt{})) * sizeof_bits<ElementV>::value));
 
     // Host side kernel arguments
     struct Arguments {
@@ -161,7 +303,7 @@ struct CollectiveMainloopFwd {
         ShapeQKV const shape_K;
         StrideQKV const stride_K;
         ShapeQKV const unpadded_shape_K;
-        Element const* ptr_Vt;
+        ElementV const* ptr_Vt;
         ShapeQKV const shape_Vt;
         StrideQKV const stride_Vt;
         ElementSF const* ptr_SFQ{nullptr};
@@ -173,6 +315,11 @@ struct CollectiveMainloopFwd {
         float const* ptr_ds;
         ShapeQKV const shape_ds;
         StrideQKV const stride_ds;
+        float const* ptr_v_scale;
+        int64_t const v_scale_batch_stride;
+        int64_t const v_scale_head_stride;
+        int64_t const v_scale_row_stride;
+        int const h_h_k_ratio;
         float const softmax_scale_log2;
     };
 
@@ -188,11 +335,16 @@ struct CollectiveMainloopFwd {
         LayoutDS const layout_DS;
         TMA_Q tma_load_Q;
         TMA_SFQ tma_load_SFQ;
-        TMA_KV tma_load_K;
+        TMA_K tma_load_K;
         TMA_SFKV tma_load_SFK;
         TMA_Vt tma_load_Vt;
         TMA_SFVt tma_load_SFVt;
         TMA_DS tma_load_DS;
+        float const* ptr_v_scale;
+        int64_t const v_scale_batch_stride;
+        int64_t const v_scale_head_stride;
+        int64_t const v_scale_row_stride;
+        int const h_h_k_ratio;
         float const softmax_scale_log2;
     };
 
@@ -207,7 +359,7 @@ struct CollectiveMainloopFwd {
             select<0, 2>(TileShape_MNK{}),
             _1{}); // no mcast for Q
         Tensor mK = make_tensor(make_gmem_ptr(args.ptr_K), args.shape_K, args.stride_K);
-        TMA_KV tma_load_K = make_tma_copy(
+        TMA_K tma_load_K = make_tma_copy(
             GmemTiledCopy{},
             mK,
             SmemLayoutK{}(_, _, _0{}),
@@ -245,22 +397,38 @@ struct CollectiveMainloopFwd {
             SmemLayoutSFK{}(_, _, _0{}),
             make_shape(shape<1>(TileShape_MNK{}), shape<2>(TileShape_MNK{})),
             _1{});
-        LayoutSF layout_sfvt = BlkScaledConfig::tile_atom_to_shape_SFVt(args.shape_SFVt);
-        Tensor mSFVt = make_tensor(make_gmem_ptr(args.ptr_SFVt), layout_sfvt);
-        TMA_SFVt tma_load_sfvt = make_tma_copy<uint16_t>(
-            GmemTiledCopySF{},
-            mSFVt,
-            SmemLayoutSFVt{}(_, _, _0{}),
-            make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})),
-            _1{});
+        auto sfv_tma = [&] {
+            if constexpr (Ktraits::kUseFp8PV) {
+                return cute::make_tuple(LayoutSF{}, NoTmaCopy{});
+            } else {
+                LayoutSF layout_sfvt =
+                    BlkScaledConfig::tile_atom_to_shape_SFVt(args.shape_SFVt);
+                Tensor mSFVt =
+                    make_tensor(make_gmem_ptr(args.ptr_SFVt), layout_sfvt);
+                TMA_SFVt tma_load_sfvt = make_tma_copy<uint16_t>(
+                    GmemTiledCopySF{},
+                    mSFVt,
+                    SmemLayoutSFVt{}(_, _, _0{}),
+                    make_shape(
+                        shape<2>(TileShape_MNK{}),
+                        shape<1>(TileShape_MNK{})),
+                    _1{});
+                return cute::make_tuple(layout_sfvt, tma_load_sfvt);
+            }
+        }();
         return {args.shape_Q, layout_sfq,
                 args.shape_K, args.unpadded_shape_K, layout_sfk,
-                args.shape_Vt, layout_sfvt,
+                args.shape_Vt, get<0>(sfv_tma),
                 layout_ds,
                 tma_load_Q, tma_load_sfq,
                 tma_load_K, tma_load_sfk,
-                tma_load_Vt, tma_load_sfvt,
-                tma_load_ds, 
+                tma_load_Vt, get<1>(sfv_tma),
+                tma_load_ds,
+                args.ptr_v_scale,
+                args.v_scale_batch_stride,
+                args.v_scale_head_stride,
+                args.v_scale_row_stride,
+                args.h_h_k_ratio,
                 args.softmax_scale_log2};
     }
 
@@ -272,7 +440,10 @@ struct CollectiveMainloopFwd {
         cute::prefetch_tma_descriptor(mainloop_params.tma_load_Vt.get_tma_descriptor());
         cute::prefetch_tma_descriptor(mainloop_params.tma_load_SFQ.get_tma_descriptor());
         cute::prefetch_tma_descriptor(mainloop_params.tma_load_SFK.get_tma_descriptor());
-        cute::prefetch_tma_descriptor(mainloop_params.tma_load_SFVt.get_tma_descriptor());
+        if constexpr (!Ktraits::kUseFp8PV) {
+            cute::prefetch_tma_descriptor(
+                mainloop_params.tma_load_SFVt.get_tma_descriptor());
+        }
         cute::prefetch_tma_descriptor(mainloop_params.tma_load_DS.get_tma_descriptor());
     }
 
@@ -449,6 +620,7 @@ struct CollectiveMainloopFwd {
         static constexpr int kBlockN = get<1>(TileShape_MNK{});
 
         auto [m_block, bidh, bidb] = work_tile_info.get_block_coord(scheduler_params);
+        int const bidh_kv = bidh / mainloop_params.h_h_k_ratio;
 
         int n_block_max = get_n_block_max(mainloop_params, m_block);
 
@@ -457,7 +629,6 @@ struct CollectiveMainloopFwd {
         Tensor sVt = make_tensor(make_smem_ptr(shared_storage.smem_v.begin()), SmemLayoutVt{});
         Tensor sSFQ = make_tensor(make_smem_ptr(shared_storage.smem_SFQ.begin()), SmemLayoutSFQ{});
         Tensor sSFK = make_tensor(make_smem_ptr(shared_storage.smem_SFK.begin()), SmemLayoutSFK{});
-        Tensor sSFVt = make_tensor(make_smem_ptr(shared_storage.smem_SFV.begin()), SmemLayoutSFVt{});
         Tensor sDS = make_tensor(make_smem_ptr(shared_storage.smem_ds.begin()), SmemLayoutDS{});
 
         Tensor mQ = mainloop_params.tma_load_Q.get_tma_tensor(mainloop_params.shape_Q);
@@ -466,13 +637,12 @@ struct CollectiveMainloopFwd {
         Tensor mDS = mainloop_params.tma_load_DS.get_tma_tensor(shape(mainloop_params.layout_DS));
         Tensor mSFQ = mainloop_params.tma_load_SFQ.get_tma_tensor(shape(mainloop_params.layout_SFQ));
         Tensor mSFK = mainloop_params.tma_load_SFK.get_tma_tensor(shape(mainloop_params.layout_SFK));
-        Tensor mSFVt = mainloop_params.tma_load_SFVt.get_tma_tensor(shape(mainloop_params.layout_SFVt));
         uint32_t block_rank_in_cluster = cute::block_rank_in_cluster();
         constexpr uint32_t cluster_shape_x = get<0>(ClusterShape());
         uint2 cluster_local_block_id = {block_rank_in_cluster % cluster_shape_x, block_rank_in_cluster / cluster_shape_x};
         Tensor gQ = local_tile(mQ(_, _, bidh, bidb), select<0, 2>(TileShape_MNK{}), make_coord(m_block, _0{}));  // (M, K)
-        Tensor gK = local_tile(mK(_, _, bidh, bidb), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}));  // (N, K, _)
-        Tensor gVt = local_tile(mVt(_, _, bidh, bidb), make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})), make_coord(_0{}, _));  // (N, K, _)
+        Tensor gK = local_tile(mK(_, _, bidh_kv, bidb), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}));  // (N, K, _)
+        Tensor gVt = local_tile(mVt(_, _, bidh_kv, bidb), make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})), make_coord(_0{}, _));  // (N, K, _)
         Tensor gDS = [&] {
                         if constexpr (BlockMean) {
                             return local_tile(mDS(_, _, bidh, bidb), select<0, 1>(TileShape_MNK{}), make_coord(m_block, _));
@@ -481,8 +651,7 @@ struct CollectiveMainloopFwd {
                         }
                     }();
         Tensor gSFQ = local_tile(mSFQ(_, _, bidh, bidb), select<0, 2>(TileShape_MNK{}), make_coord(m_block, _0{}));
-        Tensor gSFK = local_tile(mSFK(_, _, bidh, bidb), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}));
-        Tensor gSFVt = local_tile(mSFVt(_, _, bidh, bidb), make_shape(shape<2>(TileShape_MNK{}), shape<1>(TileShape_MNK{})), make_coord(_0{}, _));
+        Tensor gSFK = local_tile(mSFK(_, _, bidh_kv, bidb), select<1, 2>(TileShape_MNK{}), make_coord(_, _0{}));
         auto block_tma_q = mainloop_params.tma_load_Q.get_slice(_0{});
         Tensor tQgQ = block_tma_q.partition_S(gQ);
         Tensor tQsQ = block_tma_q.partition_D(sQ);
@@ -498,13 +667,47 @@ struct CollectiveMainloopFwd {
         auto block_tma_vt = mainloop_params.tma_load_Vt.get_slice(cluster_local_block_id.x);
         Tensor tVgVt = group_modes<0, 3>(block_tma_vt.partition_S(gVt));
         Tensor tVsVt = group_modes<0, 3>(block_tma_vt.partition_D(sVt));
-        auto block_tma_sfvt = mainloop_params.tma_load_SFVt.get_slice(cluster_local_block_id.x);
-        Tensor tVgSFVt = group_modes<0, 3>(block_tma_sfvt.partition_S(gSFVt));
-        Tensor tVsSFVt = group_modes<0, 3>(block_tma_sfvt.partition_D(sSFVt));
         auto block_tma_ds = mainloop_params.tma_load_DS.get_slice(cluster_local_block_id.x);
         Tensor tDSgDS = group_modes<0, 3>(block_tma_ds.partition_S(gDS));
         Tensor tDSsDS = group_modes<0, 3>(block_tma_ds.partition_D(sDS));
         uint16_t mcast_mask_kv = 0;
+        auto issue_v_load = [&](int block) {
+            pipeline_v.producer_acquire(smem_pipe_write_v);
+            copy(
+                mainloop_params.tma_load_Vt.with(
+                    *pipeline_v.producer_get_barrier(smem_pipe_write_v),
+                    mcast_mask_kv),
+                tVgVt(_, block),
+                tVsVt(_, smem_pipe_write_v.index()));
+            if constexpr (!Ktraits::kUseFp8PV) {
+                Tensor sSFVt = make_tensor(
+                    make_smem_ptr(shared_storage.smem_SFV.begin()),
+                    SmemLayoutSFVt{});
+                Tensor mSFVt =
+                    mainloop_params.tma_load_SFVt.get_tma_tensor(
+                        shape(mainloop_params.layout_SFVt));
+                Tensor gSFVt = local_tile(
+                    mSFVt(_, _, bidh_kv, bidb),
+                    make_shape(
+                        shape<2>(TileShape_MNK{}),
+                        shape<1>(TileShape_MNK{})),
+                    make_coord(_0{}, _));
+                auto block_tma_sfvt =
+                    mainloop_params.tma_load_SFVt.get_slice(
+                        cluster_local_block_id.x);
+                Tensor tVgSFVt = group_modes<0, 3>(
+                    block_tma_sfvt.partition_S(gSFVt));
+                Tensor tVsSFVt = group_modes<0, 3>(
+                    block_tma_sfvt.partition_D(sSFVt));
+                copy(
+                    mainloop_params.tma_load_SFVt.with(
+                        *pipeline_v.producer_get_barrier(smem_pipe_write_v),
+                        mcast_mask_kv),
+                    tVgSFVt(_, block),
+                    tVsSFVt(_, smem_pipe_write_v.index()));
+            }
+            ++smem_pipe_write_v;
+        };
 
         int n_block = n_block_max - 1;
         int lane_predicate = cute::elect_one_sync();
@@ -521,12 +724,7 @@ struct CollectiveMainloopFwd {
         copy(mainloop_params.tma_load_DS.with(*pipeline_k.producer_get_barrier(smem_pipe_write_k), mcast_mask_kv),
             tDSgDS(_, n_block), tDSsDS(_, smem_pipe_write_k.index()));
         ++smem_pipe_write_k;
-        pipeline_v.producer_acquire(smem_pipe_write_v);
-        copy(mainloop_params.tma_load_Vt.with(*pipeline_v.producer_get_barrier(smem_pipe_write_v), mcast_mask_kv),
-            tVgVt(_, n_block), tVsVt(_, smem_pipe_write_v.index()));
-        copy(mainloop_params.tma_load_SFVt.with(*pipeline_v.producer_get_barrier(smem_pipe_write_v), mcast_mask_kv),
-            tVgSFVt(_, n_block), tVsSFVt(_, smem_pipe_write_v.index()));
-        ++smem_pipe_write_v;
+        issue_v_load(n_block);
         }
 
         n_block--;
@@ -542,12 +740,7 @@ struct CollectiveMainloopFwd {
                 copy(mainloop_params.tma_load_DS.with(*pipeline_k.producer_get_barrier(smem_pipe_write_k), mcast_mask_kv),
                     tDSgDS(_, n_block), tDSsDS(_, smem_pipe_write_k.index()));
                 ++smem_pipe_write_k;
-                pipeline_v.producer_acquire(smem_pipe_write_v);
-                copy(mainloop_params.tma_load_Vt.with(*pipeline_v.producer_get_barrier(smem_pipe_write_v), mcast_mask_kv),
-                    tVgVt(_, n_block), tVsVt(_, smem_pipe_write_v.index()));
-                copy(mainloop_params.tma_load_SFVt.with(*pipeline_v.producer_get_barrier(smem_pipe_write_v), mcast_mask_kv),
-                    tVgSFVt(_, n_block), tVsSFVt(_, smem_pipe_write_v.index()));
-                ++smem_pipe_write_v;
+                issue_v_load(n_block);
             }
         }
         ++work_idx;
@@ -585,6 +778,8 @@ struct CollectiveMainloopFwd {
         int thread_idx,
         int work_idx,
         int m_block,
+        int bidh,
+        int bidb,
         SharedStorage& shared_storage
         ) {
 
@@ -599,10 +794,24 @@ struct CollectiveMainloopFwd {
         Tensor sDS = make_tensor(make_smem_ptr(shared_storage.smem_ds.begin()), SmemLayoutDS{});
         Tensor sSFQ = make_tensor(make_smem_ptr(shared_storage.smem_SFQ.begin()), SmemLayoutSFQ{});
         Tensor sSFK = make_tensor(make_smem_ptr(shared_storage.smem_SFK.begin()), SmemLayoutSFK{});
-        Tensor sSFVt = make_tensor(make_smem_ptr(shared_storage.smem_SFV.begin()), SmemLayoutSFVt{});
+        Tensor sSFVt = [&] {
+            if constexpr (Ktraits::kUseFp8PV) {
+                return make_tensor(
+                    make_smem_ptr(reinterpret_cast<ElementSF*>(
+                        shared_storage.smem_o.begin())),
+                    SmemLayoutSFVt{});
+            } else {
+                return make_tensor(
+                    make_smem_ptr(shared_storage.smem_SFV.begin()),
+                    SmemLayoutSFVt{});
+            }
+        }();
+        // FP8 P uses the epilogue buffer as a mainloop-only exchange tile.
+        Tensor sP = make_tensor(
+            make_smem_ptr(reinterpret_cast<ElementP*>(
+                shared_storage.smem_o.begin())),
+            SmemLayoutP{});
 
-        Tensor cQ = make_identity_tensor(make_shape(size<0>(sQ), size<1>(sQ)));
-        Tensor cKV = make_identity_tensor(make_shape(size<0>(sK), size<1>(sK)));
         TiledMmaQK tiled_mma_qk;
         TiledMmaPV tiled_mma_pv;
         auto thread_mma_qk = tiled_mma_qk.get_thread_slice(thread_idx);
@@ -611,28 +820,45 @@ struct CollectiveMainloopFwd {
         Tensor tSrQ = thread_mma_qk.partition_fragment_A(sQ);
         Tensor tSrK = thread_mma_qk.partition_fragment_B(sK(_,_,Int<0>{}));
         Tensor tOrVt = thread_mma_pv.partition_fragment_B(sVt(_,_,Int<0>{}));
-        Tensor tOrP = make_tensor_like<Element>(LayoutP{});
+        Tensor tOrP = [&] {
+            if constexpr (Ktraits::kUseFp8PV) {
+                return thread_mma_pv.partition_fragment_A(sP);
+            } else {
+                return make_tensor_like<Element>(LayoutP{});
+            }
+        }();
         Tensor tSrSFQ = partition_fragment_SFA(sSFQ, thread_mma_qk);
         Tensor tSrSFK = partition_fragment_SFB(sSFK(_,_,Int<0>{}), thread_mma_qk);
-        Tensor tOrSFVt = partition_fragment_SFB(sSFVt(_,_,Int<0>{}), thread_mma_pv);
+        Tensor tOrSFVt = [&] {
+            if constexpr (Ktraits::kUseFp8PV) {
+                return make_tensor<ElementSF>(Layout<_1>{});
+            } else {
+                return partition_fragment_SFB(
+                    sSFVt(_,_,Int<0>{}),
+                    thread_mma_pv);
+            }
+        }();
         Tensor tOrSFP = make_tensor<ElementSF>(LayoutSFP{});
-        Tensor tOrSFP_flt = filter_zeros(tOrSFP);
-        Tensor tSrDS = make_tensor<float>(make_shape(_8{}, _4{}), make_stride(_1{}, _8{}));
         // copy qk and sf from smem to rmem
         auto smem_tiled_copy_Q = make_tiled_copy_A(SmemCopyAtomQ{}, tiled_mma_qk);
         auto smem_thr_copy_Q = smem_tiled_copy_Q.get_thread_slice(thread_idx);
         Tensor tSsQ = smem_thr_copy_Q.partition_S(as_position_independent_swizzle_tensor(sQ));
         Tensor tSrQ_copy_view = smem_thr_copy_Q.retile_D(tSrQ);
 
-        auto smem_tiled_copy_K = make_tiled_copy_B(SmemCopyAtomKV{}, tiled_mma_qk);
+        auto smem_tiled_copy_K = make_tiled_copy_B(SmemCopyAtomK{}, tiled_mma_qk);
         auto smem_thr_copy_K = smem_tiled_copy_K.get_thread_slice(thread_idx);
         Tensor tSsK = smem_thr_copy_K.partition_S(as_position_independent_swizzle_tensor(sK));
         Tensor tSrK_copy_view = smem_thr_copy_K.retile_D(tSrK);
 
-        auto smem_tiled_copy_V = make_tiled_copy_B(SmemCopyAtomKV{}, tiled_mma_pv);
+        auto smem_tiled_copy_V = make_tiled_copy_B(SmemCopyAtomV{}, tiled_mma_pv);
         auto smem_thr_copy_V = smem_tiled_copy_V.get_thread_slice(thread_idx);
         Tensor tOsVt = smem_thr_copy_V.partition_S(as_position_independent_swizzle_tensor(sVt));
         Tensor tOrVt_copy_view = smem_thr_copy_V.retile_D(tOrVt); 
+        auto smem_tiled_copy_P = make_tiled_copy_A(SmemCopyAtomP{}, tiled_mma_pv);
+        auto smem_thr_copy_P = smem_tiled_copy_P.get_thread_slice(thread_idx);
+        Tensor tPsP = smem_thr_copy_P.partition_S(
+            as_position_independent_swizzle_tensor(sP));
+        Tensor tPrP_copy_view = smem_thr_copy_P.retile_D(tOrP);
 
         auto tile_shape_mnk = tile_shape(tiled_mma_qk);
         auto smem_tiled_copy_SFQ = make_tiled_copy_impl(SmemCopyAtomSF{}, 
@@ -650,14 +876,6 @@ struct CollectiveMainloopFwd {
         auto smem_thr_copy_SFK = smem_tiled_copy_SFK.get_thread_slice(thread_idx);
         Tensor tSsSFK = smem_thr_copy_SFK.partition_S(as_position_independent_swizzle_tensor(sSFK));
         Tensor tSrSFK_copy_view = smem_thr_copy_SFK.retile_D(tSrSFK);
-
-        auto smem_tiled_copy_SFV = make_tiled_copy_impl(SmemCopyAtomSF{}, 
-                                                        get_layoutSFB_TV(tiled_mma_pv),
-                                                        make_shape(size<1>(tile_shape_mnk), size<2>(tile_shape_mnk))
-                                                        );
-        auto smem_thr_copy_SFV = smem_tiled_copy_SFV.get_thread_slice(thread_idx);
-        Tensor tOsSFVt = smem_thr_copy_SFV.partition_S(as_position_independent_swizzle_tensor(sSFVt));
-        Tensor tOrSFVt_copy_view = smem_thr_copy_SFV.retile_D(tOrSFVt);
 
         auto consumer_wait = [](auto& pipeline, auto& smem_pipe_read) {
             auto barrier_token = pipeline.consumer_try_wait(smem_pipe_read);
@@ -678,9 +896,27 @@ struct CollectiveMainloopFwd {
         
         auto copy_v_block = [&](auto block_id) {
             auto tOsVt_stage = tOsVt(_, _, _, smem_pipe_read_v.index());
-            auto tOsSFVt_stage = tOsSFVt(_, _, _, smem_pipe_read_v.index());
             copy(smem_tiled_copy_V, tOsVt_stage(_, _, block_id), tOrVt_copy_view(_, _, block_id));
-            copy(smem_tiled_copy_SFV, tOsSFVt_stage(_, _, block_id), tOrSFVt_copy_view(_, _, block_id));
+            if constexpr (!Ktraits::kUseFp8PV) {
+                auto smem_tiled_copy_SFV = make_tiled_copy_impl(
+                    SmemCopyAtomSF{},
+                    get_layoutSFB_TV(tiled_mma_pv),
+                    make_shape(
+                        size<1>(tile_shape_mnk),
+                        size<2>(tile_shape_mnk)));
+                auto smem_thr_copy_SFV =
+                    smem_tiled_copy_SFV.get_thread_slice(thread_idx);
+                Tensor tOsSFVt = smem_thr_copy_SFV.partition_S(
+                    as_position_independent_swizzle_tensor(sSFVt));
+                Tensor tOrSFVt_copy_view =
+                    smem_thr_copy_SFV.retile_D(tOrSFVt);
+                auto tOsSFVt_stage =
+                    tOsSFVt(_, _, _, smem_pipe_read_v.index());
+                copy(
+                    smem_tiled_copy_SFV,
+                    tOsSFVt_stage(_, _, block_id),
+                    tOrSFVt_copy_view(_, _, block_id));
+            }
         };
         // auto gemm_qk = [&](auto block_id) {
         //     cute::gemm(tiled_mma_qk, make_zip_tensor(tSrQ(_, _, block_id), tSrSFQ(_, _, block_id)), make_zip_tensor(tSrK(_, _, block_id), tSrSFK(_, _, block_id)), tSrS);
@@ -751,39 +987,47 @@ struct CollectiveMainloopFwd {
             Tensor tScS = thread_mma_qk.partition_C(cS);
             CUTLASS_PRAGMA_UNROLL
             for (int i = 0; i < size(tSrS); ++i) {
+                int const col = Ktraits::kUseFp8PV
+                    ? Fp8PVRegisterRemap::qk_col_to_logical(
+                        int(get<1>(tScS(i))))
+                    : int(get<1>(tScS(i)));
                 if constexpr (!Is_causal) {  // Just masking based on col
-                    if (int(get<1>(tScS(i))) >= int(unpadded_seqlen_k - n_block * kBlockN)) { tSrS(i) = -INFINITY; }
+                    if (col >= int(unpadded_seqlen_k - n_block * kBlockN)) { tSrS(i) = -INFINITY; }
                 } else { 
-                    if (int(get<1>(tScS(i))) >= std::min(seqlen_k - n_block * kBlockN,
-                                                        col_limit_causal(int(get<0>(tScS(i))), n_block))) {
+                    if (col >= std::min(
+                            seqlen_k - n_block * kBlockN,
+                            col_limit_causal(
+                                int(get<0>(tScS(i))),
+                                n_block))) {
                         tSrS(i) = -INFINITY;
                     }
                 }
             }
         }
         auto quantize = [&](auto mma_k, auto acc_conversion_view) {
-            Tensor AbsMaxP_stagek = AbsMaxP(_, make_coord(_, _, mma_k));
-            Tensor acc_conversion_stagek = acc_conversion_view(_, _, mma_k);
-            Tensor SFP = make_tensor_like<cutlass::float_ue4m3_t>(AbsMaxP_stagek.layout());
-            Tensor SFP_uint32_view = recast<uint32_t>(SFP);
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < size(AbsMaxP_stagek); i += 4) {
-                uint32_t& tmp = SFP_uint32_view(i / 4);
-                flash::packed_float_to_ue4m3(
-                    AbsMaxP_stagek(i), 
-                    AbsMaxP_stagek(i + 1), 
-                    AbsMaxP_stagek(i + 2), 
-                    AbsMaxP_stagek(i + 3), 
-                    tmp
-                );
-            }
-            int const quad_id = threadIdx.x & 3;
-            uint32_t MASK = (0xFF00FF) << ((quad_id & 1) * 8);
-            Tensor tOrSFP_uint32_view = recast<uint32_t>(tOrSFP(_, _, mma_k));
-            Tensor tOrP_uint32_view = recast<uint32_t>(tOrP(_, _, mma_k));
-        
-            CUTLASS_PRAGMA_UNROLL
-            for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
+            if constexpr (!Ktraits::kUseFp8PV) {
+                Tensor AbsMaxP_stagek = AbsMaxP(_, make_coord(_, _, mma_k));
+                Tensor acc_conversion_stagek = acc_conversion_view(_, _, mma_k);
+                Tensor SFP = make_tensor_like<cutlass::float_ue4m3_t>(AbsMaxP_stagek.layout());
+                Tensor SFP_uint32_view = recast<uint32_t>(SFP);
+                CUTLASS_PRAGMA_UNROLL
+                for (int i = 0; i < size(AbsMaxP_stagek); i += 4) {
+                    uint32_t& tmp = SFP_uint32_view(i / 4);
+                    flash::packed_float_to_ue4m3(
+                        AbsMaxP_stagek(i),
+                        AbsMaxP_stagek(i + 1),
+                        AbsMaxP_stagek(i + 2),
+                        AbsMaxP_stagek(i + 3),
+                        tmp
+                    );
+                }
+                int const quad_id = threadIdx.x & 3;
+                uint32_t MASK = (0xFF00FF) << ((quad_id & 1) * 8);
+                Tensor tOrSFP_uint32_view = recast<uint32_t>(tOrSFP(_, _, mma_k));
+                Tensor tOrP_uint32_view = recast<uint32_t>(tOrP(_, _, mma_k));
+
+                CUTLASS_PRAGMA_UNROLL
+                for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
                     CUTLASS_PRAGMA_UNROLL
                     for (int i = 0; i < 4; ++i) {
                         if constexpr (Ktraits::kBypassPPacking) {
@@ -822,21 +1066,100 @@ struct CollectiveMainloopFwd {
                         uint32_t sfp = (peer_sfp & MASK) | ((local_sfp & MASK) >> 8);
                         tOrSFP_uint32_view(_0{}, mma_m) = sfp;
                     }
+                }
+            }
+        };
+        uint32_t fp8_pv_register_peer_mask = 0;
+        if constexpr (Ktraits::kUseFp8PVRegisterRemap) {
+            static_assert(
+                Fp8PVRegisterRemap::template validates_atom_layout<
+                    TiledMmaQK,
+                    TiledMmaPV>(),
+                "QK-C to FP8 PV-A register remap does not match the MMA atoms");
+            Tensor cP = cute::make_identity_tensor(
+                select<0, 1>(TileShape_MNK{}));
+            Tensor tPcP = thread_mma_pv.partition_A(cP);
+            CUTE_STATIC_ASSERT_V(size(tPcP) == size(tSrS));
+            CUTE_STATIC_ASSERT_V(size<0>(TileShape_MNK{}) == _128{});
+            CUTE_STATIC_ASSERT_V(size<1>(TileShape_MNK{}) == _128{});
+            CUTE_STATIC_ASSERT_V(size<2>(tPcP) == _4{});
+            int const lane = threadIdx.x % cutlass::NumThreadsPerWarp;
+            fp8_pv_register_peer_mask = __match_any_sync(
+                __activemask(), lane / 4);
+        }
+        auto prepare_fp8_p = [&](auto const& scores) {
+            if constexpr (Ktraits::kUseFp8PVRegisterRemap) {
+                Fp8PVRegisterRemap::convert(
+                    scores,
+                    tOrP,
+                    fp8_pv_register_peer_mask);
+            } else if constexpr (Ktraits::kUseFp8PV) {
+                Tensor cS = cute::make_identity_tensor(
+                    select<0, 1>(TileShape_MNK{}));
+                Tensor tScS = thread_mma_qk.partition_C(cS);
+                cutlass::NumericConverter<ElementP, float> convert_p;
+                CUTLASS_PRAGMA_UNROLL
+                for (int i = 0; i < size(scores); ++i) {
+                    auto coord = tScS(i);
+                    int const col =
+                        Fp8PVRegisterRemap::qk_col_to_logical(
+                            int(get<1>(coord)));
+                    sP(get<0>(coord), col) = convert_p(scores(i));
+                }
+                cutlass::arch::NamedBarrier::sync(
+                    NumMmaThreads,
+                    static_cast<uint32_t>(FP4NamedBarriers::ConsumerEnd));
+                copy(smem_tiled_copy_P, tPsP, tPrP_copy_view);
+                cutlass::arch::NamedBarrier::sync(
+                    NumMmaThreads,
+                    static_cast<uint32_t>(FP4NamedBarriers::ConsumerEnd));
+            }
+        };
+        auto gemm_pv = [&](auto block_id, auto& output) {
+            if constexpr (Ktraits::kUseFp8PV) {
+                cute::gemm(
+                    tiled_mma_pv,
+                    tOrP(_, _, block_id),
+                    tOrVt(_, _, block_id),
+                    output);
+            } else {
+                cute::gemm(
+                    tiled_mma_pv,
+                    make_zip_tensor(
+                        tOrP(_, _, block_id),
+                        tOrSFP(_, _, block_id)),
+                    make_zip_tensor(
+                        tOrVt(_, _, block_id),
+                        tOrSFVt(_, _, block_id)),
+                    output);
             }
         };
 
-        softmax_fused.template online_softmax_with_quant</*Is_first=*/true>(tSrS, AbsMaxP, mainloop_params.softmax_scale_log2);
+        if constexpr (Ktraits::kUseFp8PV) {
+            softmax_fused.template online_softmax_fp8</*FirstTile=*/true>(
+                tSrS,
+                mainloop_params.softmax_scale_log2);
+            prepare_fp8_p(tSrS);
+        } else {
+            softmax_fused.template online_softmax_with_quant</*Is_first=*/true>(
+                tSrS,
+                AbsMaxP,
+                mainloop_params.softmax_scale_log2);
+        }
 
         consumer_wait(pipeline_v, smem_pipe_read_v);
         copy_v_block(_0{});
-        quantize(_0{}, tSrS_converion_view);
+        if constexpr (!Ktraits::kUseFp8PV) {
+            quantize(_0{}, tSrS_converion_view);
+        }
         CUTLASS_PRAGMA_UNROLL
         for (int v_block = 0; v_block < size<2>(tOrP); ++v_block) {
-            cute::gemm(tiled_mma_pv, make_zip_tensor(tOrP(_, _, v_block), tOrSFP(_, _, v_block)), 
-                                    make_zip_tensor(tOrVt(_, _, v_block), tOrSFVt(_, _, v_block)), tOrO_store);
+            gemm_pv(v_block, tOrO_store);
             if (v_block < size<2>(tOrP) - 1) {
                 copy_v_block(v_block + 1);
-                quantize(v_block + 1, tSrS_converion_view);
+                if constexpr (!Ktraits::kUseFp8PV) {
+                    quantize(v_block + 1, tSrS_converion_view);
+                }
             } else {
                 pipeline_v.consumer_release(smem_pipe_read_v);
                 ++smem_pipe_read_v;
@@ -867,27 +1190,50 @@ struct CollectiveMainloopFwd {
             Tensor tScS = thread_mma_qk.partition_C(cS);
             #pragma unroll
             for (int i = 0; i < size(tSrS); ++i) {
-                if (int(get<1>(tScS(i))) >= col_limit_causal(int(get<0>(tScS(i))), n_block - 1)) {
+                int const col = Ktraits::kUseFp8PV
+                    ? Fp8PVRegisterRemap::qk_col_to_logical(
+                        int(get<1>(tScS(i))))
+                    : int(get<1>(tScS(i)));
+                if (col >= col_limit_causal(
+                        int(get<0>(tScS(i))),
+                        n_block - 1)) {
                     tSrS(i) = -INFINITY;
                 }
             }
-            softmax_fused.template online_softmax_with_quant</*Is_first=*/false>(tSrS, AbsMaxP, mainloop_params.softmax_scale_log2);
+            if constexpr (Ktraits::kUseFp8PV) {
+                softmax_fused.template online_softmax_fp8</*FirstTile=*/false>(
+                    tSrS,
+                    mainloop_params.softmax_scale_log2);
+                prepare_fp8_p(tSrS);
+            } else {
+                softmax_fused.template online_softmax_with_quant</*Is_first=*/false>(
+                    tSrS,
+                    AbsMaxP,
+                    mainloop_params.softmax_scale_log2);
+            }
             Tensor tOrO = make_fragment_like(tOrO_store);
             consumer_wait(pipeline_v, smem_pipe_read_v);
             copy_v_block(_0{});
-            quantize(_0{}, tSrS_converion_view);
+            if constexpr (!Ktraits::kUseFp8PV) {
+                quantize(_0{}, tSrS_converion_view);
+            }
             CUTLASS_PRAGMA_UNROLL
             for (int v_block = 0; v_block < size<2>(tOrP); ++v_block) {
-                cute::gemm(tiled_mma_pv, make_zip_tensor(tOrP(_, _, v_block), tOrSFP(_, _, v_block)), 
-                                    make_zip_tensor(tOrVt(_, _, v_block), tOrSFVt(_, _, v_block)), tOrO);
+                gemm_pv(v_block, tOrO);
                 if (v_block < size<2>(tOrP) - 1) {
                     copy_v_block(v_block + 1);
-                    quantize(v_block + 1, tSrS_converion_view);
+                    if constexpr (!Ktraits::kUseFp8PV) {
+                        quantize(v_block + 1, tSrS_converion_view);
+                    }
                 }
             }
             pipeline_v.consumer_release(smem_pipe_read_v);
             ++smem_pipe_read_v;
-            if (masking_step > 0) { softmax_fused.rescale_o(tOrO_store, tOrO); }
+            if constexpr (Ktraits::kUseFp8PV) {
+                softmax_fused.rescale_o(tOrO_store, tOrO);
+            } else if (masking_step > 0) {
+                softmax_fused.rescale_o(tOrO_store, tOrO);
+            }
         }
 
         #pragma unroll 1
@@ -908,18 +1254,31 @@ struct CollectiveMainloopFwd {
                     ++smem_pipe_read_k;
                 }
             }
-            softmax_fused.template online_softmax_with_quant</*Is_first=*/false>(tSrS, AbsMaxP, mainloop_params.softmax_scale_log2);
+            if constexpr (Ktraits::kUseFp8PV) {
+                softmax_fused.template online_softmax_fp8</*FirstTile=*/false>(
+                    tSrS,
+                    mainloop_params.softmax_scale_log2);
+                prepare_fp8_p(tSrS);
+            } else {
+                softmax_fused.template online_softmax_with_quant</*Is_first=*/false>(
+                    tSrS,
+                    AbsMaxP,
+                    mainloop_params.softmax_scale_log2);
+            }
             Tensor tOrO = make_fragment_like(tOrO_store);
             consumer_wait(pipeline_v, smem_pipe_read_v);
             copy_v_block(_0{});
-            quantize(_0{}, tSrS_converion_view);
+            if constexpr (!Ktraits::kUseFp8PV) {
+                quantize(_0{}, tSrS_converion_view);
+            }
             CUTLASS_PRAGMA_UNROLL
             for (int v_block = 0; v_block < size<2>(tOrP); ++v_block) {
-                cute::gemm(tiled_mma_pv, make_zip_tensor(tOrP(_, _, v_block), tOrSFP(_, _, v_block)), 
-                                    make_zip_tensor(tOrVt(_, _, v_block), tOrSFVt(_, _, v_block)), tOrO);
+                gemm_pv(v_block, tOrO);
                 if (v_block < size<2>(tOrP) - 1) {
                     copy_v_block(v_block + 1);
-                    quantize(v_block + 1, tSrS_converion_view);
+                    if constexpr (!Ktraits::kUseFp8PV) {
+                        quantize(v_block + 1, tSrS_converion_view);
+                    }
                 } else {
                     pipeline_v.consumer_release(smem_pipe_read_v);
                     ++smem_pipe_read_v;
@@ -928,6 +1287,21 @@ struct CollectiveMainloopFwd {
             softmax_fused.rescale_o(tOrO_store, tOrO);
         }
         softmax_fused.finalize(tOrO_store);
+        if constexpr (Ktraits::kUseFp8PV) {
+            int const bidh_kv = bidh / mainloop_params.h_h_k_ratio;
+            float const* v_scale = mainloop_params.ptr_v_scale +
+                bidb * mainloop_params.v_scale_batch_stride +
+                bidh_kv * mainloop_params.v_scale_head_stride;
+            Tensor cO = cute::make_identity_tensor(
+                select<0, 2>(TileShape_MNK{}));
+            Tensor tOcO = thread_mma_pv.partition_C(cO);
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < size(tOrO_store); ++i) {
+                int const channel = int(get<1>(tOcO(i)));
+                tOrO_store(i) *=
+                    v_scale[channel * mainloop_params.v_scale_row_stride];
+            }
+        }
         return;
     }
 
