@@ -102,6 +102,12 @@ struct SoftmaxFused{
                     }
                     float max_recv = __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), max_recv);
+                    // One 32-column K group spans all 4 lanes of the warp quad
+                    // (2 lanes per 8-column tile-pair); xor(1) alone merged only
+                    // half the group's columns, leaving the group max up to 2x
+                    // too small. The second xor completes the quad butterfly
+                    // {l, l^1, l^2, l^3} so every lane holds the full-group max.
+                    AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 2));
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 
@@ -142,6 +148,8 @@ struct SoftmaxFused{
                     }
                     float max_recv = __shfl_xor_sync(int32_t(-1), local_max, 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(local_max, max_recv);
+                    // Complete the quad butterfly (see first-tile branch).
+                    AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 2));
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 

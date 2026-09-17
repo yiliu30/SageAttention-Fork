@@ -462,9 +462,15 @@ __global__ void scaled_fp4_quant_trans_kernel(
 
   if constexpr (CVT_FP4_ELTS_PER_THREAD == 32) {
     // MXFP4 Vt layout: verified against
-    // flash::BlockScaledConfig<32>::tile_atom_to_shape_SFVt.
+    // flash::BlockScaledConfig<32>::tile_atom_to_shape_SFVt (host probe
+    // sfvt_layout_probe: 0 mismatches at L=128/256/512).  The gmem layout is
+    // slabbed: each 64-row block holds 256 bytes per 128-element sequence
+    // slab (4 slots of 32), so the slab index must add (col/4)*256.  A bare
+    // `col` collides rows (d, col) with (d+16, col-4) for col >= 4, so any
+    // L > 128 left the second slab's SF bytes unwritten (torch.empty
+    // garbage: nondeterministic, including e8m0 0xFF = NaN -> NaN output).
     uint32_t col_id_local = token_block_id * BLOCK_SIZE / CVT_FP4_ELTS_PER_THREAD + threadIdx.x % NUM_THREADS_PER_SEQ;
-    uint32_t offset_local = col_id_local +
+    uint32_t offset_local = (col_id_local / 4) * 256 + (col_id_local % 4) +
                             (row_id_local / 16) * 4 + (row_id_local % 16) * 16;
     reinterpret_cast<uint8_t*>(output_sf_save_base + offset_local)[0] = SFValueFP8;
   } else if constexpr (CVT_FP4_ELTS_PER_THREAD == 16) {

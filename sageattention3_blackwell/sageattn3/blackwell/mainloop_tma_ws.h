@@ -889,7 +889,10 @@ struct CollectiveMainloopFwd {
             }
             pipeline_v.consumer_release(smem_pipe_read_v);
             ++smem_pipe_read_v;
-            if (masking_step > 0) { softmax_fused.rescale_o(tOrO_store, tOrO); }
+            // Rescale on EVERY masking step (including the first): tOrO_store
+            // holds the previous tile's unnormalized O and online_softmax_with_quant
+            // above already advanced scores_scale/row_sum for this tile.
+            softmax_fused.rescale_o(tOrO_store, tOrO);
         }
 
         #pragma unroll 1
