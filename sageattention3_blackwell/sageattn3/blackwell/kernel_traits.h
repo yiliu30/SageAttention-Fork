@@ -88,14 +88,21 @@ struct Flash_fwd_kernel_traits {
     static constexpr int kClusterM = kClusterM_;
     static constexpr int kStages = kStages_;
     static constexpr int EpiStages = 1;
-    static constexpr int NumSFQK = kHeadDim / 16;
-    static constexpr int NumSFPV = kBlockN / 16;
-    using ElementSF = cutlass::float_ue4m3_t;
+    // ---------------------------------------------------------------------
+    // Quantization format is selected by ElementPairType_:
+    //   cutlass::nv_float4_t<e2m1> -> NVFP4, per-16 E4M3 scales (SFVecSize 16)
+    //   cutlass::mx_float4_t<e2m1> -> MXFP4, per-32 E8M0 scales (SFVecSize 32)
+    // ---------------------------------------------------------------------
     using Element = cutlass::float_e2m1_t;
+    using ElementSF = typename ElementPairType_::ScaleFactorType;
+    // Elements covered by one scale factor: 16 for E4M3, 32 for E8M0.
+    static constexpr int SFVectorSize = cute::is_same_v<ElementSF, cutlass::float_ue8m0_t> ? 32 : 16;
+    static_assert(SFVectorSize == 16 || SFVectorSize == 32, "unsupported scale-factor type");
+    static constexpr int NumSFQK = kHeadDim / SFVectorSize;
+    static constexpr int NumSFPV = kBlockN / SFVectorSize;
     using ElementAccum = float;
     using ElementOut = ElementOut_;
     using index_t = int64_t;
-    static constexpr auto SFVectorSize = 16;
     using TileShape_MNK = Shape<Int<kBlockM>, Int<kBlockN>, Int<kHeadDim>>;
     using ClusterShape_MNK = Shape<_1, _1, _1>;
     using PermTileM = decltype(cute::min(size<0>(TileShape_MNK{}), _128{}));
@@ -109,14 +116,23 @@ struct Flash_fwd_kernel_traits {
                                             Layout<Shape<_8, _1, _1>>,
                                             Layout<Shape<_4, _1, _1>>
                                             >;
+    // NVFP4 uses the in-tree custom 16x32x64 atom (N=32 per atom, 4X/ue4m3).
+    // MXFP4 uses the upstream CUTLASS 16x8x64 atom (N=8 per atom, 2X/ue8m0) --
+    // the shape that ships with a passing CUTLASS unit test.
+    using MmaAtomQK = std::conditional_t<
+        SFVectorSize == 32,
+        cute::SM120::BLOCKSCALED::SM120_16x8x64_TN_VS<
+            cutlass::float_e2m1_t, cutlass::float_e2m1_t, float, cutlass::float_ue8m0_t, 32>,
+        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4>;
+
     using TiledMmaQK = decltype(cute::make_tiled_mma(
-        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4{},
+        MmaAtomQK{},
         AtomLayoutMNK{},
         Tile<PermTileM, PermTileN, PermTileK>{}
       ));
-    
+
     using TiledMmaPV = decltype(cute::make_tiled_mma(
-        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4{},
+        MmaAtomQK{},
         AtomLayoutMNK{},
         Tile<PermTileM, _32, PermTileK>{}
       ));

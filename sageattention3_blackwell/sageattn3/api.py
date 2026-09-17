@@ -17,7 +17,7 @@ import torch
 import triton
 import triton.language as tl
 import torch.nn.functional as F
-from typing import Tuple
+from typing import Tuple, Literal
 from torch.nn.functional import scaled_dot_product_attention as sdpa
 import fp4attn_cuda
 import fp4quant_cuda
@@ -91,29 +91,44 @@ def preprocess_qkv(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, per_block_
     delta_s = torch.matmul(qm, k.transpose(-2, -1)).to(torch.float32).contiguous()
     return q, k, v, delta_s
 
-def scale_and_quant_fp4(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+# Scale-factor block size and dtype per quantization format.
+#   "nvfp4": per-16-element E4M3 scales  -> torch.float8_e4m3fn, D//16
+#   "mxfp4": per-32-element E8M0 scales  -> torch.uint8,           D//32
+_SF_SPEC = {
+    "nvfp4": (16, torch.float8_e4m3fn),
+    "mxfp4": (32, torch.uint8),
+}
+
+
+def _sf_alloc(B: int, H: int, N: int, D: int, device, fmt: str) -> torch.Tensor:
+    block, dtype = _SF_SPEC[fmt]
+    return torch.empty((B, H, N, D // block), device=device, dtype=dtype)
+
+
+def scale_and_quant_fp4(x: torch.Tensor, fmt: str = "nvfp4") -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.ndim == 4
     B, H, N, D = x.shape
     packed_fp4 = torch.empty((B, H, N, D // 2), device=x.device, dtype=torch.uint8)
-    fp8_scale = torch.empty((B, H, N, D // 16), device=x.device, dtype=torch.float8_e4m3fn)
-    fp4quant_cuda.scaled_fp4_quant(x, packed_fp4, fp8_scale, 1)
-    return packed_fp4, fp8_scale
+    sf = _sf_alloc(B, H, N, D, x.device, fmt)
+    fp4quant_cuda.scaled_fp4_quant(x, packed_fp4, sf, 1)
+    return packed_fp4, sf
 
-def scale_and_quant_fp4_permute(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def scale_and_quant_fp4_permute(x: torch.Tensor, fmt: str = "nvfp4") -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.ndim == 4
     B, H, N, D = x.shape
     packed_fp4 = torch.empty((B, H, N, D // 2), device=x.device, dtype=torch.uint8)
-    fp8_scale = torch.empty((B, H, N, D // 16), device=x.device, dtype=torch.float8_e4m3fn)
-    fp4quant_cuda.scaled_fp4_quant_permute(x, packed_fp4, fp8_scale, 1)
-    return packed_fp4, fp8_scale
+    sf = _sf_alloc(B, H, N, D, x.device, fmt)
+    fp4quant_cuda.scaled_fp4_quant_permute(x, packed_fp4, sf, 1)
+    return packed_fp4, sf
 
-def scale_and_quant_fp4_transpose(x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+def scale_and_quant_fp4_transpose(x: torch.Tensor, fmt: str = "nvfp4") -> Tuple[torch.Tensor, torch.Tensor]:
     assert x.ndim == 4
     B, H, N, D = x.shape
     packed_fp4 = torch.empty((B, H, D, N // 2), device=x.device, dtype=torch.uint8)
-    fp8_scale = torch.empty((B, H, D, N // 16), device=x.device, dtype=torch.float8_e4m3fn)
-    fp4quant_cuda.scaled_fp4_quant_trans(x, packed_fp4, fp8_scale, 1)
-    return packed_fp4, fp8_scale
+    block, dtype = _SF_SPEC[fmt]
+    sf = torch.empty((B, H, D, N // block), device=x.device, dtype=dtype)
+    fp4quant_cuda.scaled_fp4_quant_trans(x, packed_fp4, sf, 1)
+    return packed_fp4, sf
 
 def blockscaled_fp4_attn(qlist: Tuple, 
                          klist: Tuple,
@@ -128,17 +143,25 @@ def blockscaled_fp4_attn(qlist: Tuple,
     return fp4attn_cuda.fwd(qlist[0], klist[0], vlist[0], qlist[1], klist[1], vlist[1], delta_s, KL, None, softmax_scale, is_causal, per_block_mean, is_bf16)
 
 
-def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = True, **kwargs):
+def sageattn3_blackwell(q, k, v, attn_mask = None, is_causal = False, per_block_mean = True,
+                        fmt: Literal["nvfp4", "mxfp4"] = "nvfp4", **kwargs):
     if q.size(-1) >= 256:
         print(f"Unsupported Headdim {q.size(-1)}")
         return sdpa(q, k, v, is_causal = is_causal)
+    if fmt not in _SF_SPEC:
+        raise ValueError(f"unsupported fmt {fmt!r}; expected one of {sorted(_SF_SPEC)}")
+    if fmt == "mxfp4" and q.size(-1) != 128:
+        # The upstream 16x8x64 MXFP4 atom requires head_dim % 128 == 0.
+        raise ValueError(
+            f"mxfp4 requires head_dim == 128, got {q.size(-1)}; use fmt='nvfp4'"
+        )
     QL = q.size(2)
     KL = k.size(2)
     is_bf16 = q.dtype == torch.bfloat16
     q, k, v, delta_s = preprocess_qkv(q, k, v, per_block_mean)
-    qlist_from_cuda = scale_and_quant_fp4(q)
-    klist_from_cuda = scale_and_quant_fp4_permute(k)
-    vlist_from_cuda = scale_and_quant_fp4_transpose(v)
+    qlist_from_cuda = scale_and_quant_fp4(q, fmt)
+    klist_from_cuda = scale_and_quant_fp4_permute(k, fmt)
+    vlist_from_cuda = scale_and_quant_fp4_transpose(v, fmt)
     o_fp4 = blockscaled_fp4_attn(
     qlist_from_cuda,
     klist_from_cuda, 

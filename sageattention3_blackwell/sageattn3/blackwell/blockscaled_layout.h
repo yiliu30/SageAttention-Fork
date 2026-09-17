@@ -60,7 +60,10 @@ struct BlockScaledConfig {
   // We are creating the SFA and SFB tensors' layouts in the collective since they always have the same layout.
   // k-major order
   static constexpr int SFVecSize = SFVecSize_;
-  static constexpr int MMA_NSF = 4; // SFVecSize, MMA_NSF
+  // MMA_NSF scale factors per atom along K. The block-scaled atom has K=64, and
+  // each SF covers SFVecSize consecutive K elements, so MMA_NSF = 64/SFVecSize
+  // (4 for NVFP4 at SFVecSize=16, 2 for MXFP4 at SFVecSize=32).
+  static constexpr int MMA_NSF = 64 / SFVecSize;
   using BlkScaledChunk = BlockScaledBasicChunk<SFVecSize>;
   using Blk_MN    = _64;
   using Blk_SF    =   _4; 

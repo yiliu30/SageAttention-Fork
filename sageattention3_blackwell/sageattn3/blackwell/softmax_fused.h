@@ -24,14 +24,32 @@ namespace flash {
 
 using namespace cute;
 
-template <int Rows>
+template <int Rows, bool IsMXFP4 = false>
 struct SoftmaxFused{
 
     using TensorT = decltype(make_fragment_like<float>(Shape<Int<Rows>>{}));
     TensorT row_sum, row_max, scores_scale;
-    static constexpr float fp8_scalexfp4_scale = 1.f / (448 * 6);
-    static constexpr float fp8_scalexfp4_scale_log2 = -11.392317422778762f; //log2f(fp8_scalexfp4_scale)
-    static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(fp4_scale)
+    // Two constants fold the P-quantization scales into the exp2 above.
+    //
+    // The invariant is that the operand the PV MMA receives, `value = acc/AbsMaxP`,
+    // must span [0, 6] to use the full e2m1 range (6 is the e2m1 max).
+    //
+    //   NVFP4 (SFVecSize 16, E4M3 SF): the SF is prob_max/(448*6) -- 448 is the
+    //     E4M3 max and 6 the e2m1 max -- so acc is pre-scaled by 1/(448*6) and
+    //     AbsMaxP by a further 1/6. value = 6*prob/prob_max in [0,6].
+    //
+    //   MXFP4 (SFVecSize 32, E8M0 SF): E8M0 carries no mantissa, so the 448 has no
+    //     analogue and is dropped (fp8_scalexfp4_scale_log2 = 0). The 1/6 is still
+    //     required -- e2m1 saturates at 6 regardless of SF format.
+    //
+    // Note: zeroing BOTH constants would still be numerically correct, but
+    // value = prob/prob_max would span only [0,1], wasting ~2.5 bits of e2m1 and
+    // visibly hurting quality. Keep the 1/6.
+    static constexpr float fp8_scalexfp4_scale =
+        IsMXFP4 ? 1.f : (1.f / (448 * 6));
+    static constexpr float fp8_scalexfp4_scale_log2 =
+        IsMXFP4 ? 0.f : -11.392317422778762f; // log2f(fp8_scalexfp4_scale)
+    static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(1/6)
     static constexpr int RowReductionThr = 4;
 
     CUTLASS_DEVICE SoftmaxFused(){};
