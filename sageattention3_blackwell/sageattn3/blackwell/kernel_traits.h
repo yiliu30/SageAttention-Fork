@@ -116,9 +116,12 @@ struct Flash_fwd_kernel_traits {
                                             Layout<Shape<_8, _1, _1>>,
                                             Layout<Shape<_4, _1, _1>>
                                             >;
-    // NVFP4 uses the in-tree custom 16x32x64 atom (N=32 per atom, 4X/ue4m3).
-    // MXFP4 uses the upstream CUTLASS 16x8x64 atom (N=8 per atom, 2X/ue8m0) --
-    // the shape that ships with a passing CUTLASS unit test.
+    // Both formats use an N=32-per-atom 16x32x64 atom, so the (M16,N32) C
+    // fragment layout that the online-softmax / quantization path depends on
+    // (flash::convert_to_conversion_layout asserts MmaAtomN == 8) is identical
+    // for NVFP4 and MXFP4.  They differ only in the scale-factor semantics:
+    //   NVFP4 -> 4X scaling, ue4m3 (E4M3) scales, SFVecSize 16
+    //   MXFP4 -> 2X scaling, ue8m0 (E8M0) scales, SFVecSize 32
     using MmaAtomQK = std::conditional_t<
         SFVectorSize == 32,
         cute::SM120::BLOCKSCALED::SM120_16x8x64_TN_VS<
@@ -173,10 +176,25 @@ struct Flash_fwd_kernel_traits {
     using SmemLayoutAtomSFK = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaQK{}, TileShape_MNK{}));
     using SmemLayoutAtomSFV = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaPV{}, TileShape_MNK{}));
     using SmemLayoutAtomSFVt = decltype(BlkScaledConfig::deduce_smem_layoutSFVt(TiledMmaPV{}, Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>{}));
+    // Register-fragment layout of the SF for the PV gemm's A operand (P).
+    //
+    // P is (kBlockM, kBlockN); the PV atom's K is 64, so each atom-K block
+    // consumes MMA_NSF SF slots along K and there are kBlockN/64 such blocks.
+    // The SF is broadcast across the rows of a 16-element block (stride 0, and
+    // the row mode has stride 0 too), so a per-k_block slice is
+    //   (64/MMA_NSF, MMA_NSF) : (0, 1)
+    // which is what cute::SM120::BLOCKSCALED::mma_unpack requires:
+    //   size(SFA)                 == size<2>(Shape_MNK) == 64
+    //   cosize(layout(SFA))       == 64/SFVecSize
+    // Both hold because 64/MMA_NSF * MMA_NSF == 64 and, since MMA_NSF is
+    // 64/SFVecSize, cosize == MMA_NSF == 64/SFVecSize.
+    //
+    // MMA_NSF is 4 for NVFP4 (so this is bit-identical to the original
+    // hardcoded (16,4):(0,1) / stride 4) and 2 for MXFP4 (giving (32,2):(0,1)).
     using LayoutSFP = decltype(
       make_layout(
-          make_shape(make_shape(_16{}, _4{}), _1{}, Int<kBlockN / 64>{}),
-          make_stride(make_stride(_0{}, _1{}), _0{}, _4{})
+          make_shape(make_shape(Int<64 / MMA_NSF>{}, Int<MMA_NSF>{}), _1{}, Int<kBlockN / 64>{}),
+          make_stride(make_stride(_0{}, _1{}), _0{}, Int<MMA_NSF>{})
       )
     );
     using LayoutP = decltype(
