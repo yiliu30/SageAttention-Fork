@@ -52,6 +52,29 @@ struct SoftmaxFused{
     static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(1/6)
     static constexpr int RowReductionThr = 4;
 
+    // MXFP4 only: the E8M0 scale factor cannot represent `AbsMaxP` exactly (no
+    // mantissa), so `quantize` emits ceil_pow2(AbsMaxP) into the SF register.
+    // The PV gemm computes sum(P_q) * SF, so the P values MUST be divided by
+    // that *same* rounded-up scale -- dividing by the raw AbsMaxP while the MMA
+    // multiplies by the rounded-up SF leaves a scale mismatch of
+    // AbsMaxP/ceil_pow2(AbsMaxP), which for prob_max near 1 is up to 2x. That
+    // inflated every row of O by that factor (observed: O mean 1.75 instead of
+    // 1.0 for v=ones, and cosine 0.18 on the bench).
+    //
+    // NVFP4 is immune because its E4M3 SF holds AbsMaxP/(448*6) with a
+    // mantissa, so the divide and the multiply agree by construction.
+    //
+    // Rounding AbsMaxP up here (instead of at SF-emit time) makes divide ==
+    // multiply exactly. It is exact and free: no exp2, no cvt, just an exponent
+    // ceil, and it keeps e2m1's value range at [0,6] since AbsMaxP <= 1/6.
+    CUTLASS_DEVICE static float ceil_pow2(float x) {
+        if constexpr (IsMXFP4) {
+            return __uint_as_float((__float_as_uint(x) + 0x007FFFFFu) & 0xFF800000u);
+        } else {
+            return x;
+        }
+    }
+
     CUTLASS_DEVICE SoftmaxFused(){};
 
     template<bool FirstTile, bool InfCheck = false, typename TensorAcc, typename TensorMax>
@@ -94,7 +117,7 @@ struct SoftmaxFused{
                 }
                 CUTLASS_PRAGMA_UNROLL
                 for (int sfi = 0; sfi < size<1>(AbsMaxP); sfi++) {
-                    AbsMaxP(mi, sfi) = flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2);
+                    AbsMaxP(mi, sfi) = ceil_pow2(flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2));
                 }
             }
             CUTLASS_PRAGMA_UNROLL
@@ -141,7 +164,7 @@ struct SoftmaxFused{
                 }
                 CUTLASS_PRAGMA_UNROLL
                 for (int sfi = 0; sfi < size<1>(AbsMaxP); sfi++) {
-                    AbsMaxP(mi, sfi) = flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2);
+                    AbsMaxP(mi, sfi) = ceil_pow2(flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2));
                 }
                 // scores_scale(mi) = max_scaled;
             }

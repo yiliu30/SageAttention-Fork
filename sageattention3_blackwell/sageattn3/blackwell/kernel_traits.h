@@ -122,10 +122,16 @@ struct Flash_fwd_kernel_traits {
     // for NVFP4 and MXFP4.  They differ only in the scale-factor semantics:
     //   NVFP4 -> 4X scaling, ue4m3 (E4M3) scales, SFVecSize 16
     //   MXFP4 -> 2X scaling, ue8m0 (E8M0) scales, SFVecSize 32
+    // NOTE: the MXFP4 atom is the N=32 counterpart (not upstream's N=8
+    // SM120_16x8x64_TN_VS). Both *build*, but the upstream N=8 atom has a
+    // 4-values-per-thread C layout ((_4,_8),(_2,_2)), whereas this kernel's
+    // hand-written LayoutP/LayoutSFP and its online-softmax P-quantization
+    // assume 16 values per thread -- the geometry shared by the NVFP4 atom and
+    // by SM120_16x32x64_TN_VS_MXFP4 ((_4,_8),((_2,_4),_2)). Using the N=8 atom
+    // writes P and its scale factors to the wrong registers.
     using MmaAtomQK = std::conditional_t<
         SFVectorSize == 32,
-        cute::SM120::BLOCKSCALED::SM120_16x8x64_TN_VS<
-            cutlass::float_e2m1_t, cutlass::float_e2m1_t, float, cutlass::float_ue8m0_t, 32>,
+        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_MXFP4,
         cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4>;
 
     using TiledMmaQK = decltype(cute::make_tiled_mma(
