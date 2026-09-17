@@ -169,6 +169,22 @@ struct SoftmaxFused{
                 // scores_scale(mi) = max_scaled;
             }
         }
+        // MXFP4: AbsMaxP is (mi,(n0,_1)) with mi stride 1 (probe-verified), so
+        // the flat slot pairs (even i, i+1) are the TWO M ROWS of one
+        // 32-column K group.  The PV atom's A-operand SF register supplies a
+        // single uint16 -- one E8M0 byte per 32-column half -- for the pair of
+        // rows the lane owns, so both rows must share one per-K-group scale.
+        // Folding the pair maxima here, BEFORE the divide, keeps the divisor
+        // identical to the byte `quantize` emits, so the softmax's divide and
+        // the MMA's multiply agree exactly instead of differing by up to 2x.
+        if constexpr (IsMXFP4) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i + 1 < size(AbsMaxP); i += 2) {
+                float m = fmaxf(AbsMaxP(i), AbsMaxP(i + 1));
+                AbsMaxP(i) = m;
+                AbsMaxP(i + 1) = m;
+            }
+        }
         CUTLASS_PRAGMA_UNROLL
         for (int i = 0; i < size(AbsMaxP); ++i) {
             CUTLASS_PRAGMA_UNROLL

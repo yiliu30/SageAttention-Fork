@@ -771,26 +771,26 @@ struct CollectiveMainloopFwd {
 
             if constexpr (Ktraits::SFVectorSize == 32) {
                 // ---- MXFP4: E8M0, one byte per 32-element K block ----
-                // Each SF register is 16 bits holding TWO e8m0 bytes, and an
-                // MMA consumes K=64 = 2 blocks -> exactly the 1xuint16 the atom
-                // declares. Both bytes are built within the SAME lane, so no
-                // cross-lane shuffle is needed (unlike the NVFP4 path below,
-                // which must gather two lanes' e4m3 bytes into one uint32).
+                // AbsMaxP_stagek is (mi,(n0,n1)) with mi stride 1, so the four
+                // slots are (row0,half0) (row1,half0) (row0,half1) (row1,half1)
+                // (probe-verified).  n0 is the 32-column K half of the 64-wide
+                // PV atom, and the hardware applies SF byte0 to that atom's
+                // K[0,32) and byte1 to K[32,64).  So byte0 must come from n0=0
+                // and byte1 from n0=1 -- packing (0,1) instead duplicated the
+                // K-lo half's scale into both bytes, scaling the upper 32
+                // columns by the lower half's max (up to 2x) and inflating O.
+                // Both bytes are built in the SAME lane, so no cross-lane
+                // shuffle is needed (unlike the NVFP4 path below, which must
+                // gather two lanes' e4m3 bytes into one uint32).
                 Tensor SFP = make_tensor_like<cutlass::float_ue8m0_t>(AbsMaxP_stagek.layout());
                 Tensor SFP_uint16_view = recast<uint16_t>(SFP);
-                CUTLASS_PRAGMA_UNROLL
-                for (int i = 0; i + 1 < size(AbsMaxP_stagek); i += 2) {
-                    flash::packed_float_to_ue8m0(
-                        AbsMaxP_stagek(i), AbsMaxP_stagek(i + 1),
-                        SFP_uint16_view(i / 2));
-                }
+                flash::packed_float_to_ue8m0(
+                    AbsMaxP_stagek(0), AbsMaxP_stagek(2), SFP_uint16_view(0));
                 Tensor tOrSFP_uint16_view = recast<uint16_t>(tOrSFP(_, _, mma_k));
                 CUTLASS_PRAGMA_UNROLL
                 for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
                     pack_P(acc_conversion_stagek, tOrP_uint32_view, mma_m);
-                    // Doubling is exact in e8m0 (power-of-two scales), so the
-                    // softmax halving of AbsMaxP is folded here instead.
-                    tOrSFP_uint16_view(_0{}, mma_m) = SFP_uint16_view(_0{}, _0{}, mma_m);
+                    tOrSFP_uint16_view(_0{}, mma_m) = SFP_uint16_view(0);
                 }
             } else {
                 // ---- NVFP4: E4M3, one byte per 16-element K block ----
