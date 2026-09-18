@@ -24,26 +24,34 @@ The MXFP4 form differs in two ways:
 
 ## Layout for V (`tile_atom_to_shape_SFVt`)
 
-V is stored transposed as `(D, N)`. For head-dim index `d` and seq-block `nb`:
+V is stored transposed as `(D, N)`. The layout is **slabbed**: each 64-row block
+holds 256 bytes per **128-element sequence slab**, so the slab index must be
+added explicitly. With `d` = head-dim index, `col` = SF block index along the
+sequence (`col = n / 32`, so 4 per 128-element slab), `row = d % 64`:
 
 ```
-offset = (d/64)*256 + nb + ((nb%64)/16)*4 + ((nb%64)%16)*16   ... with d and nb
+offset = (d/64)*256          # 64-row slab of D
+       + (col/4)*256         # <-- the slab term. NOT optional.
+       + (col%4)             # 4 SF slots per row, contiguous in the low bits
+       + (row/16)*4 + (row%16)*16
 ```
 
-More precisely, evaluated at L=128, D=128 (verified):
-`L(d, nb*32) = (d/64)*256 + nb + ((nb*32%64)/16)*4 + ((nb*32%64)%16)*16`
-which for nb in {0,1,2,3} gives the observed 0,1,2,3 / 16,17,18,19 / 4,5,6,7.
+**The `(col/4)*256` term is load-bearing and easy to miss.** Omitting it makes a
+bare `col` collide `(d, col)` with `(d+16, col-4)` once `col >= 4`. Because the
+quantizer uses `BLOCK_SIZE = 128`, the collision only appears for **L > 128** —
+at `L = 128` the buggy and correct forms agree exactly, which is why a
+verification that only exercises L=128 will pass while every longer sequence
+silently leaves the second slab's SF bytes **unwritten** (`torch.empty` garbage;
+`e8m0 0xFF` decodes as NaN).
 
-Because `((nb*32) % 64) % 16 == 0` for nb in {0,1,2,3}, this reduces to:
+Host-probe mismatch counts against `tile_atom_to_shape_SFVt`:
 
-| nb | offset for `d < 64` |
-|---|---|
-| 0 | 0 |
-| 1 | 1 |
-| 2 | 4 |
-| 3 | 5 |
-
-and `+256` for `d >= 64`.
+| L | without the slab term | with it |
+|---|---|---|
+| 128 | 0 / 512 | 0 / 512 |
+| 256 | 512 / 1024 | **0 / 1024** |
+| 512 | 1536 / 2048 | **0 / 2048** |
+| 1024 | 3584 / 4096 | **0 / 4096** |
 
 ## Key consequence for the quantizer
 
