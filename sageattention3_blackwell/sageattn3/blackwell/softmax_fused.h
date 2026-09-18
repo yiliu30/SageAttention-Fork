@@ -24,15 +24,67 @@ namespace flash {
 
 using namespace cute;
 
-template <int Rows>
+template <int Rows, bool IsMXFP4 = false>
 struct SoftmaxFused{
 
     using TensorT = decltype(make_fragment_like<float>(Shape<Int<Rows>>{}));
     TensorT row_sum, row_max, scores_scale;
-    static constexpr float fp8_scalexfp4_scale = 1.f / (448 * 6);
-    static constexpr float fp8_scalexfp4_scale_log2 = -11.392317422778762f; //log2f(fp8_scalexfp4_scale)
-    static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(fp4_scale)
+    // Two constants fold the P-quantization scales into the exp2 above.
+    //
+    // Invariant: the operand the PV MMA receives, `value = acc/AbsMaxP`, must
+    // span [0, 6] to use the full e2m1 range (6 is the e2m1 max).
+    //
+    // Both constants are applied as exp2 range shifts, i.e. the effective
+    // MULTIPLIERS are the reciprocals of the constants named below.  Working
+    // through a peak element (prob_max, unnormalised exp == 1):
+    //
+    //   NVFP4 (SFVecSize 16, E4M3 SF):
+    //     acc     = exp_unnorm * 448*6   (=2688)   <- scaled UP
+    //     AbsMaxP = prob_max   * 448               <- SF parked near E4M3's max
+    //     value   = acc/AbsMaxP = 6*prob/prob_max in [0,6]
+    //   448 is E4M3's max and 6 is E2M1's; together they both lift the E4M3 SF
+    //   into its usable range and leave the operand spanning [0,6].
+    //
+    //   MXFP4 (SFVecSize 32, E8M0 SF):
+    //     acc     = exp_unnorm * 1
+    //     AbsMaxP = prob_max/6, then ceil_pow2() by the caller
+    //     value   = acc/AbsMaxP in [0,6]
+    //   E8M0 carries no mantissa, so the 448 has no analogue and is dropped
+    //   (fp8_scalexfp4_scale_log2 = 0).  The 1/6 is STILL required -- e2m1
+    //   saturates at 6 regardless of SF format.
+    //
+    // Note: zeroing BOTH constants would still be numerically correct (the
+    // factors cancel in finalize's row_sum divide), but value would span only
+    // [0,1], wasting ~2.5 bits of e2m1. Keep the 1/6.
+    static constexpr float fp8_scalexfp4_scale =
+        IsMXFP4 ? 1.f : (1.f / (448 * 6));
+    static constexpr float fp8_scalexfp4_scale_log2 =
+        IsMXFP4 ? 0.f : -11.392317422778762f; // log2f(fp8_scalexfp4_scale)
+    static constexpr float fp4_scale_log2 = -2.584962500721156f; // log2f(1/6)
     static constexpr int RowReductionThr = 4;
+
+    // MXFP4 only: the E8M0 scale factor cannot represent `AbsMaxP` exactly (no
+    // mantissa), so `quantize` emits ceil_pow2(AbsMaxP) into the SF register.
+    // The PV gemm computes sum(P_q) * SF, so the P values MUST be divided by
+    // that *same* rounded-up scale -- dividing by the raw AbsMaxP while the MMA
+    // multiplies by the rounded-up SF leaves a scale mismatch of
+    // AbsMaxP/ceil_pow2(AbsMaxP), which for prob_max near 1 is up to 2x. That
+    // inflated every row of O by that factor (observed: O mean 1.75 instead of
+    // 1.0 for v=ones, and cosine 0.18 on the bench).
+    //
+    // NVFP4 is immune because its E4M3 SF holds prob_max*448 -- a value with a
+    // mantissa -- so the divide and the multiply agree by construction.
+    //
+    // Rounding AbsMaxP up here (instead of at SF-emit time) makes divide ==
+    // multiply exactly. It is exact and free: no exp2, no cvt, just an exponent
+    // ceil, and it keeps e2m1's value range at [0,6] since AbsMaxP <= 1/6.
+    CUTLASS_DEVICE static float ceil_pow2(float x) {
+        if constexpr (IsMXFP4) {
+            return __uint_as_float((__float_as_uint(x) + 0x007FFFFFu) & 0xFF800000u);
+        } else {
+            return x;
+        }
+    }
 
     CUTLASS_DEVICE SoftmaxFused(){};
 
@@ -61,6 +113,12 @@ struct SoftmaxFused{
                     }
                     float max_recv = __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), max_recv);
+                    // One 32-column K group spans all 4 lanes of the warp quad
+                    // (2 lanes per 8-column tile-pair); xor(1) alone merged only
+                    // half the group's columns, leaving the group max up to 2x
+                    // too small. The second xor completes the quad butterfly
+                    // {l, l^1, l^2, l^3} so every lane holds the full-group max.
+                    AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 2));
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 
@@ -76,7 +134,7 @@ struct SoftmaxFused{
                 }
                 CUTLASS_PRAGMA_UNROLL
                 for (int sfi = 0; sfi < size<1>(AbsMaxP); sfi++) {
-                    AbsMaxP(mi, sfi) = flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2);
+                    AbsMaxP(mi, sfi) = ceil_pow2(flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2));
                 }
             }
             CUTLASS_PRAGMA_UNROLL
@@ -101,6 +159,8 @@ struct SoftmaxFused{
                     }
                     float max_recv = __shfl_xor_sync(int32_t(-1), local_max, 1); // exchange max with neighbour thread of 8 elements
                     AbsMaxP(mi, ni) = fmaxf(local_max, max_recv);
+                    // Complete the quad butterfly (see first-tile branch).
+                    AbsMaxP(mi, ni) = fmaxf(AbsMaxP(mi, ni), __shfl_xor_sync(int32_t(-1), AbsMaxP(mi, ni), 2));
                     row_max(mi) = fmaxf(row_max(mi), AbsMaxP(mi, ni));
                 }
                 
@@ -123,9 +183,25 @@ struct SoftmaxFused{
                 }
                 CUTLASS_PRAGMA_UNROLL
                 for (int sfi = 0; sfi < size<1>(AbsMaxP); sfi++) {
-                    AbsMaxP(mi, sfi) = flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2);
+                    AbsMaxP(mi, sfi) = ceil_pow2(flash::ptx_exp2(AbsMaxP(mi, sfi) * softmax_scale_log2 - max_scaled + fp4_scale_log2));
                 }
                 // scores_scale(mi) = max_scaled;
+            }
+        }
+        // MXFP4: AbsMaxP is (mi,(n0,_1)) with mi stride 1 (probe-verified), so
+        // the flat slot pairs (even i, i+1) are the TWO M ROWS of one
+        // 32-column K group.  The PV atom's A-operand SF register supplies a
+        // single uint16 -- one E8M0 byte per 32-column half -- for the pair of
+        // rows the lane owns, so both rows must share one per-K-group scale.
+        // Folding the pair maxima here, BEFORE the divide, keeps the divisor
+        // identical to the byte `quantize` emits, so the softmax's divide and
+        // the MMA's multiply agree exactly instead of differing by up to 2x.
+        if constexpr (IsMXFP4) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i + 1 < size(AbsMaxP); i += 2) {
+                float m = fmaxf(AbsMaxP(i), AbsMaxP(i + 1));
+                AbsMaxP(i) = m;
+                AbsMaxP(i + 1) = m;
             }
         }
         CUTLASS_PRAGMA_UNROLL

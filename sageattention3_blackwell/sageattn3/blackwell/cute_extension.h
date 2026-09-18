@@ -138,7 +138,167 @@ struct SM120_16x32x64_TN_VS_NVFP4 {
 
 } // namespace cute::SM120::BLOCKSCALED
 
+namespace cute::SM120::BLOCKSCALED {
+
+// MMA MXFP4 16x32x64 TN
+//
+// Same 16x32x64 shape and register/thread mapping as the NVFP4 atom below, but
+// with MXFP4 (mxf4nvf4, 2X scaling) semantics: SFVecSize = 32 and E8M0 scale
+// factors.  Two independent m16n8k64 instructions are issued for the N=32
+// atom; each consumes one 16-bit SF register per operand, i.e. one E8M0 byte
+// for a single 32-element K block (see the SFVecSize=32 case of
+// SM120_16x8x64_TN_VS, which this is the N=32 counterpart of).
+//
+// This exists so the attention kernel keeps the NVFP4 atom's (M16,N32) C
+// fragment layout, which its online-softmax / quantization code requires
+// (flash::convert_to_conversion_layout asserts MmaAtomN == 8, MmaAtomM == 2).
+struct SM120_16x32x64_TN_VS_MXFP4 {
+  using DRegisters = float[16];
+  using ARegisters = uint32_t[4];
+  using BRegisters = uint32_t[8];
+  using CRegisters = float[16];
+
+  static constexpr int SFBits = 16;
+  using RegTypeSF = ::cute::uint_bit_t<SFBits>;
+
+  using SFARegisters = RegTypeSF[1];
+  using SFBRegisters = RegTypeSF[1];
+
+  CUTE_HOST_DEVICE static void
+  fma(float         & d0 , float         & d1 , float         & d2 , float         & d3 ,
+      float         & d4 , float         & d5 , float         & d6 , float         & d7 ,
+      float         & d8 , float         & d9 , float         & d10, float         & d11,
+      float         & d12, float         & d13, float         & d14, float         & d15,
+      uint32_t const& a0 , uint32_t const& a1 , uint32_t const& a2 , uint32_t const& a3 ,
+      uint32_t const& b0 , uint32_t const& b1 , uint32_t const& b2 , uint32_t const& b3 ,
+      uint32_t const& b4 , uint32_t const& b5 , uint32_t const& b6 , uint32_t const& b7 ,
+      float const   & c0 , float const   & c1 , float const   & c2 , float const   & c3 ,
+      float const   & c4 , float const   & c5 , float const   & c6 , float const   & c7 ,
+      float const   & c8 , float const   & c9 , float const   & c10, float const   & c11,
+      float const   & c12, float const   & c13, float const   & c14, float const   & c15,
+      RegTypeSF const& sfa0,
+      RegTypeSF const& sfb0)
+  {
+    static constexpr uint16_t tidA = 0;
+    static constexpr uint16_t bidA = 0;
+    static constexpr uint16_t bidB = 0;
+    static constexpr uint16_t tidB0 = 0;
+    static constexpr uint16_t tidB1 = 1;
+    static constexpr uint16_t tidB2 = 2;
+    static constexpr uint16_t tidB3 = 3;
+
+#if defined(CUTE_ARCH_MXF4NVF4_2X_UE8M0_MMA_ENABLED)
+    asm volatile(
+      "mma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::2X.m16n8k64.row.col.f32.e2m1.e2m1.f32.ue8m0 "
+      "{%0,  %1,  %2,  %3},"
+      "{%4,  %5,  %6,  %7},"
+      "{%8,  %9},"
+      "{%10, %11, %12, %13},"
+      "{%14},"
+      "{%15, %16},"
+      "{%17},"
+      "{%18, %19};\n"
+      :  "=f"(d0),  "=f"(d1),  "=f"(d8),  "=f"(d9)
+      :   "r"(a0),   "r"(a1),   "r"(a2),   "r"(a3),
+          "r"(b0),   "r"(b1),
+          "f"(c0),   "f"(c1),   "f"(c8),   "f"(c9),
+          "r"(uint32_t(sfa0)) , "h"(bidA), "h"(tidA),
+          "r"(uint32_t(sfb0)) , "h"(bidB), "h"(tidB0));
+
+    asm volatile(
+      "mma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::2X.m16n8k64.row.col.f32.e2m1.e2m1.f32.ue8m0 "
+      "{%0,  %1,  %2,  %3},"
+      "{%4,  %5,  %6,  %7},"
+      "{%8,  %9},"
+      "{%10, %11, %12, %13},"
+      "{%14},"
+      "{%15, %16},"
+      "{%17},"
+      "{%18, %19};\n"
+      :  "=f"(d2),  "=f"(d3),  "=f"(d10),  "=f"(d11)
+      :   "r"(a0),   "r"(a1),   "r"(a2),   "r"(a3),
+          "r"(b2),   "r"(b3),
+          "f"(c2),   "f"(c3),   "f"(c10),   "f"(c11),
+          "r"(uint32_t(sfa0)) , "h"(bidA), "h"(tidA),
+          "r"(uint32_t(sfb0)) , "h"(bidB), "h"(tidB1));
+
+    asm volatile(
+      "mma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::2X.m16n8k64.row.col.f32.e2m1.e2m1.f32.ue8m0 "
+      "{%0,  %1,  %2,  %3},"
+      "{%4,  %5,  %6,  %7},"
+      "{%8,  %9},"
+      "{%10, %11, %12, %13},"
+      "{%14},"
+      "{%15, %16},"
+      "{%17},"
+      "{%18, %19};\n"
+      :  "=f"(d4),  "=f"(d5),  "=f"(d12),  "=f"(d13)
+      :   "r"(a0),   "r"(a1),   "r"(a2),   "r"(a3),
+          "r"(b4),   "r"(b5),
+          "f"(c4),   "f"(c5),   "f"(c12),   "f"(c13),
+          "r"(uint32_t(sfa0)) , "h"(bidA), "h"(tidA),
+          "r"(uint32_t(sfb0)) , "h"(bidB), "h"(tidB2));
+
+    asm volatile(
+      "mma.sync.aligned.kind::mxf4nvf4.block_scale.scale_vec::2X.m16n8k64.row.col.f32.e2m1.e2m1.f32.ue8m0 "
+      "{%0,  %1,  %2,  %3},"
+      "{%4,  %5,  %6,  %7},"
+      "{%8,  %9},"
+      "{%10, %11, %12, %13},"
+      "{%14},"
+      "{%15, %16},"
+      "{%17},"
+      "{%18, %19};\n"
+      :  "=f"(d6),  "=f"(d7),  "=f"(d14),  "=f"(d15)
+      :   "r"(a0),   "r"(a1),   "r"(a2),   "r"(a3),
+          "r"(b6),   "r"(b7),
+          "f"(c6),   "f"(c7),   "f"(c14),   "f"(c15),
+          "r"(uint32_t(sfa0)) , "h"(bidA), "h"(tidA),
+          "r"(uint32_t(sfb0)) , "h"(bidB), "h"(tidB3));
+#else
+    CUTE_INVALID_CONTROL_PATH("Attempting to use SM120_16x32x64_TN_VS_MXFP4 without CUTE_ARCH_MXF4NVF4_2X_UE8M0_MMA_ENABLED");
+#endif
+  }
+};
+
+} // namespace cute::SM120::BLOCKSCALED
+
 namespace cute {
+
+// MMA MXFP4 16x32x64 TN -- traits mirroring the NVFP4 atom (same ALayout,
+// BLayout, SFALayout, SFBLayout and CLayout), differing only in ValTypeSF
+// (E8M0) and SFVecSize (32).
+template <>
+struct MMA_Traits<SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_MXFP4>
+{
+  using ValTypeA = uint4_t;
+  using ValTypeB = uint4_t;
+
+  using ValTypeD = float;
+  using ValTypeC = float;
+
+  using ValTypeSF = cutlass::float_ue8m0_t;
+  constexpr static int SFVecSize = 32;
+
+  using Shape_MNK = Shape<_16,_32,_64>;
+  using ThrID     = Layout<_32>;
+
+  // (T32,V32) -> (M16,K64)
+  using ALayout   = Layout<Shape <Shape <  _4,_8>,Shape < _8,_2,  _2>>,
+                           Stride<Stride<_128,_1>,Stride<_16,_8,_512>>>;
+  // (T32,V64) -> (N32,K64)
+  using BLayout   = Layout<Shape <Shape < _4,_8>,Shape <_8,  _2, _4>>,
+                           Stride<Stride<_256,_1>,Stride<_32,_1024, _8>>>;
+  // (T32,V64) -> (M16,K64)
+  using SFALayout = Layout<Shape <Shape <_2,_2,_8>,_64>,
+                           Stride<Stride<_8,_0,_1>,_16>>;
+  // (T32,V64) -> (N32,K64)
+  using SFBLayout = Layout<Shape <Shape <_4,_8>,_64>,
+                           Stride<Stride<_8,_1>, _32>>;
+  // (T32,V16) -> (M16,N32)
+  using CLayout = Layout<Shape <Shape < _4,_8>,Shape < Shape<_2, _4>,_2>>,
+                              Stride<Stride<_32,_1>,Stride<Stride<_16, _128>,_8>>>;
+};
 
 // MMA NVFP4 16x32x64 TN
 template <>

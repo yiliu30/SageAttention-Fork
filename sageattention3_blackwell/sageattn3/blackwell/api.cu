@@ -179,6 +179,7 @@ void set_params_fprop(Flash_fwd_params &params,
 
     params.is_seqlens_k_cumulative = true;
     params.is_bf16 = is_bf16;
+    params.sfq_dtype = sfq.scalar_type();
     #ifdef FLASHATTENTION_DISABLE_UNEVEN_K
         TORCH_CHECK(d == d_rounded, "This flash attention build does not support headdim not being a multiple of 32.");
     #endif
@@ -187,6 +188,17 @@ void set_params_fprop(Flash_fwd_params &params,
 template<bool IsBF16>
 void run_mha_fwd_dispatch_dtype(Flash_fwd_params &params, cudaStream_t stream) {
     using OType = std::conditional_t<IsBF16, cutlass::bfloat16_t, cutlass::half_t>;
+    // Scale-factor dtype selects the quantization format:
+    //   float8_e4m3fn -> NVFP4 (per-16 E4M3), uint8 -> MXFP4 (per-32 E8M0)
+    const bool is_mxfp4 = params.sfq_ptr != nullptr &&
+                          params.sfq_dtype == at::ScalarType::Byte;
+    if (is_mxfp4) {
+        // MXFP4 uses the upstream 16x8x64 atom, which requires head_dim % 128 == 0.
+        TORCH_CHECK(params.d == 128,
+                    "MXFP4 path requires head_dim == 128, got ", params.d);
+        run_mha_fwd_<cutlass::mx_float4_t<cutlass::float_e2m1_t>, 128, OType>(params, stream);
+        return;
+    }
     if (params.d == 64) {
         run_mha_fwd_<cutlass::nv_float4_t<cutlass::float_e2m1_t>, 64, OType>(params, stream);
     } else if (params.d == 128) {
@@ -228,7 +240,8 @@ mha_fwd(at::Tensor &q,         // batch_size x seqlen_q x num_heads x (head_size
     TORCH_CHECK(v.dtype() == q_dtype, "query and value must have the same dtype");
     CHECK_DEVICE(q); CHECK_DEVICE(k); CHECK_DEVICE(v);
 
-    TORCH_CHECK(sfq_dtype == torch::kFloat8_e4m3fn, "q dtype must be uint8");
+    TORCH_CHECK(sfq_dtype == torch::kFloat8_e4m3fn || sfq_dtype == torch::kUInt8,
+                "scale factors must be float8_e4m3fn (NVFP4) or uint8 (MXFP4)");
     TORCH_CHECK(sfk.dtype() == sfq_dtype, "query and key must have the same dtype");
     TORCH_CHECK(sfv.dtype() == sfq_dtype, "query and value must have the same dtype");
     CHECK_DEVICE(sfq); CHECK_DEVICE(sfk); CHECK_DEVICE(sfv);

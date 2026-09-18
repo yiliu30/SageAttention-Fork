@@ -747,43 +747,73 @@ struct CollectiveMainloopFwd {
                 }
             }
         }
+        auto pack_P = [&](auto acc_conversion_stagek, auto tOrP_uint32_view, int mma_m) {
+            CUTLASS_PRAGMA_UNROLL
+            for (int i = 0; i < 4; ++i) {
+                flash::packed_float_to_e2m1(
+                    acc_conversion_stagek(make_coord(_0{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_1{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_2{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_3{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_4{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_5{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_6{}, i), mma_m),
+                    acc_conversion_stagek(make_coord(_7{}, i), mma_m),
+                    tOrP_uint32_view(i, mma_m)
+                );
+            }
+        };
+
         auto quantize = [&](auto mma_k, auto acc_conversion_view) {
             Tensor AbsMaxP_stagek = AbsMaxP(_, make_coord(_, _, mma_k));
             Tensor acc_conversion_stagek = acc_conversion_view(_, _, mma_k);
-            Tensor SFP = make_tensor_like<cutlass::float_ue4m3_t>(AbsMaxP_stagek.layout());
-            Tensor SFP_uint32_view = recast<uint32_t>(SFP);
-            CUTLASS_PRAGMA_UNROLL
-            for (int i = 0; i < size(AbsMaxP_stagek); i += 4) {
-                uint32_t& tmp = SFP_uint32_view(i / 4);
-                flash::packed_float_to_ue4m3(
-                    AbsMaxP_stagek(i), 
-                    AbsMaxP_stagek(i + 1), 
-                    AbsMaxP_stagek(i + 2), 
-                    AbsMaxP_stagek(i + 3), 
-                    tmp
-                );
-            }
-            int const quad_id = threadIdx.x & 3;
-            uint32_t MASK = (0xFF00FF) << ((quad_id & 1) * 8);
-            Tensor tOrSFP_uint32_view = recast<uint32_t>(tOrSFP(_, _, mma_k));
             Tensor tOrP_uint32_view = recast<uint32_t>(tOrP(_, _, mma_k));
-        
-            CUTLASS_PRAGMA_UNROLL
-            for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
-                    CUTLASS_PRAGMA_UNROLL
-                    for (int i = 0; i < 4; ++i) {
-                        flash::packed_float_to_e2m1(
-                            acc_conversion_stagek(make_coord(_0{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_1{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_2{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_3{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_4{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_5{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_6{}, i), mma_m),
-                            acc_conversion_stagek(make_coord(_7{}, i), mma_m),
-                            tOrP_uint32_view(i, mma_m)
-                        );
-                    }
+
+            if constexpr (Ktraits::SFVectorSize == 32) {
+                // ---- MXFP4: E8M0, one byte per 32-element K block ----
+                // AbsMaxP_stagek is (mi,(n0,n1)) with mi stride 1, so the four
+                // slots are (row0,half0) (row1,half0) (row0,half1) (row1,half1)
+                // (probe-verified).  n0 is the 32-column K half of the 64-wide
+                // PV atom, and the hardware applies SF byte0 to that atom's
+                // K[0,32) and byte1 to K[32,64).  So byte0 must come from n0=0
+                // and byte1 from n0=1 -- packing (0,1) instead duplicated the
+                // K-lo half's scale into both bytes, scaling the upper 32
+                // columns by the lower half's max (up to 2x) and inflating O.
+                // Both bytes are built in the SAME lane, so no cross-lane
+                // shuffle is needed (unlike the NVFP4 path below, which must
+                // gather two lanes' e4m3 bytes into one uint32).
+                Tensor SFP = make_tensor_like<cutlass::float_ue8m0_t>(AbsMaxP_stagek.layout());
+                Tensor SFP_uint16_view = recast<uint16_t>(SFP);
+                flash::packed_float_to_ue8m0(
+                    AbsMaxP_stagek(0), AbsMaxP_stagek(2), SFP_uint16_view(0));
+                Tensor tOrSFP_uint16_view = recast<uint16_t>(tOrSFP(_, _, mma_k));
+                CUTLASS_PRAGMA_UNROLL
+                for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
+                    pack_P(acc_conversion_stagek, tOrP_uint32_view, mma_m);
+                    tOrSFP_uint16_view(_0{}, mma_m) = SFP_uint16_view(0);
+                }
+            } else {
+                // ---- NVFP4: E4M3, one byte per 16-element K block ----
+                Tensor SFP = make_tensor_like<cutlass::float_ue4m3_t>(AbsMaxP_stagek.layout());
+                Tensor SFP_uint32_view = recast<uint32_t>(SFP);
+                CUTLASS_PRAGMA_UNROLL
+                for (int i = 0; i < size(AbsMaxP_stagek); i += 4) {
+                    uint32_t& tmp = SFP_uint32_view(i / 4);
+                    flash::packed_float_to_ue4m3(
+                        AbsMaxP_stagek(i),
+                        AbsMaxP_stagek(i + 1),
+                        AbsMaxP_stagek(i + 2),
+                        AbsMaxP_stagek(i + 3),
+                        tmp
+                    );
+                }
+                int const quad_id = threadIdx.x & 3;
+                uint32_t MASK = (0xFF00FF) << ((quad_id & 1) * 8);
+                Tensor tOrSFP_uint32_view = recast<uint32_t>(tOrSFP(_, _, mma_k));
+
+                CUTLASS_PRAGMA_UNROLL
+                for (int mma_m = 0; mma_m < size<1>(tOrP); ++mma_m) {
+                    pack_P(acc_conversion_stagek, tOrP_uint32_view, mma_m);
                     uint32_t local_sfp = SFP_uint32_view(_0{}, _0{}, mma_m);
                     uint32_t peer_sfp  = __shfl_xor_sync(int32_t(-1), local_sfp, 2);
                     if ((quad_id & 1) == 0) {
@@ -793,6 +823,7 @@ struct CollectiveMainloopFwd {
                         uint32_t sfp = (peer_sfp & MASK) | ((local_sfp & MASK) >> 8);
                         tOrSFP_uint32_view(_0{}, mma_m) = sfp;
                     }
+                }
             }
         };
 
@@ -858,7 +889,10 @@ struct CollectiveMainloopFwd {
             }
             pipeline_v.consumer_release(smem_pipe_read_v);
             ++smem_pipe_read_v;
-            if (masking_step > 0) { softmax_fused.rescale_o(tOrO_store, tOrO); }
+            // Rescale on EVERY masking step (including the first): tOrO_store
+            // holds the previous tile's unnormalized O and online_softmax_with_quant
+            // above already advanced scores_scale/row_sum for this tile.
+            softmax_fused.rescale_o(tOrO_store, tOrO);
         }
 
         #pragma unroll 1

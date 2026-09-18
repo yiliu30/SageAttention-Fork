@@ -88,14 +88,21 @@ struct Flash_fwd_kernel_traits {
     static constexpr int kClusterM = kClusterM_;
     static constexpr int kStages = kStages_;
     static constexpr int EpiStages = 1;
-    static constexpr int NumSFQK = kHeadDim / 16;
-    static constexpr int NumSFPV = kBlockN / 16;
-    using ElementSF = cutlass::float_ue4m3_t;
+    // ---------------------------------------------------------------------
+    // Quantization format is selected by ElementPairType_:
+    //   cutlass::nv_float4_t<e2m1> -> NVFP4, per-16 E4M3 scales (SFVecSize 16)
+    //   cutlass::mx_float4_t<e2m1> -> MXFP4, per-32 E8M0 scales (SFVecSize 32)
+    // ---------------------------------------------------------------------
     using Element = cutlass::float_e2m1_t;
+    using ElementSF = typename ElementPairType_::ScaleFactorType;
+    // Elements covered by one scale factor: 16 for E4M3, 32 for E8M0.
+    static constexpr int SFVectorSize = cute::is_same_v<ElementSF, cutlass::float_ue8m0_t> ? 32 : 16;
+    static_assert(SFVectorSize == 16 || SFVectorSize == 32, "unsupported scale-factor type");
+    static constexpr int NumSFQK = kHeadDim / SFVectorSize;
+    static constexpr int NumSFPV = kBlockN / SFVectorSize;
     using ElementAccum = float;
     using ElementOut = ElementOut_;
     using index_t = int64_t;
-    static constexpr auto SFVectorSize = 16;
     using TileShape_MNK = Shape<Int<kBlockM>, Int<kBlockN>, Int<kHeadDim>>;
     using ClusterShape_MNK = Shape<_1, _1, _1>;
     using PermTileM = decltype(cute::min(size<0>(TileShape_MNK{}), _128{}));
@@ -109,14 +116,32 @@ struct Flash_fwd_kernel_traits {
                                             Layout<Shape<_8, _1, _1>>,
                                             Layout<Shape<_4, _1, _1>>
                                             >;
+    // Both formats use an N=32-per-atom 16x32x64 atom, so the (M16,N32) C
+    // fragment layout that the online-softmax / quantization path depends on
+    // (flash::convert_to_conversion_layout asserts MmaAtomN == 8) is identical
+    // for NVFP4 and MXFP4.  They differ only in the scale-factor semantics:
+    //   NVFP4 -> 4X scaling, ue4m3 (E4M3) scales, SFVecSize 16
+    //   MXFP4 -> 2X scaling, ue8m0 (E8M0) scales, SFVecSize 32
+    // NOTE: the MXFP4 atom is the N=32 counterpart (not upstream's N=8
+    // SM120_16x8x64_TN_VS). Both *build*, but the upstream N=8 atom has a
+    // 4-values-per-thread C layout ((_4,_8),(_2,_2)), whereas this kernel's
+    // hand-written LayoutP/LayoutSFP and its online-softmax P-quantization
+    // assume 16 values per thread -- the geometry shared by the NVFP4 atom and
+    // by SM120_16x32x64_TN_VS_MXFP4 ((_4,_8),((_2,_4),_2)). Using the N=8 atom
+    // writes P and its scale factors to the wrong registers.
+    using MmaAtomQK = std::conditional_t<
+        SFVectorSize == 32,
+        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_MXFP4,
+        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4>;
+
     using TiledMmaQK = decltype(cute::make_tiled_mma(
-        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4{},
+        MmaAtomQK{},
         AtomLayoutMNK{},
         Tile<PermTileM, PermTileN, PermTileK>{}
       ));
-    
+
     using TiledMmaPV = decltype(cute::make_tiled_mma(
-        cute::SM120::BLOCKSCALED::SM120_16x32x64_TN_VS_NVFP4{},
+        MmaAtomQK{},
         AtomLayoutMNK{},
         Tile<PermTileM, _32, PermTileK>{}
       ));
@@ -157,10 +182,25 @@ struct Flash_fwd_kernel_traits {
     using SmemLayoutAtomSFK = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaQK{}, TileShape_MNK{}));
     using SmemLayoutAtomSFV = decltype(BlkScaledConfig::deduce_smem_layoutSFKV(TiledMmaPV{}, TileShape_MNK{}));
     using SmemLayoutAtomSFVt = decltype(BlkScaledConfig::deduce_smem_layoutSFVt(TiledMmaPV{}, Shape<Int<kBlockM>, Int<kHeadDim>, Int<kBlockN>>{}));
+    // Register-fragment layout of the SF for the PV gemm's A operand (P).
+    //
+    // P is (kBlockM, kBlockN); the PV atom's K is 64, so each atom-K block
+    // consumes MMA_NSF SF slots along K and there are kBlockN/64 such blocks.
+    // The SF is broadcast across the rows of a 16-element block (stride 0, and
+    // the row mode has stride 0 too), so a per-k_block slice is
+    //   (64/MMA_NSF, MMA_NSF) : (0, 1)
+    // which is what cute::SM120::BLOCKSCALED::mma_unpack requires:
+    //   size(SFA)                 == size<2>(Shape_MNK) == 64
+    //   cosize(layout(SFA))       == 64/SFVecSize
+    // Both hold because 64/MMA_NSF * MMA_NSF == 64 and, since MMA_NSF is
+    // 64/SFVecSize, cosize == MMA_NSF == 64/SFVecSize.
+    //
+    // MMA_NSF is 4 for NVFP4 (so this is bit-identical to the original
+    // hardcoded (16,4):(0,1) / stride 4) and 2 for MXFP4 (giving (32,2):(0,1)).
     using LayoutSFP = decltype(
       make_layout(
-          make_shape(make_shape(_16{}, _4{}), _1{}, Int<kBlockN / 64>{}),
-          make_stride(make_stride(_0{}, _1{}), _0{}, _4{})
+          make_shape(make_shape(Int<64 / MMA_NSF>{}, Int<MMA_NSF>{}), _1{}, Int<kBlockN / 64>{}),
+          make_stride(make_stride(_0{}, _1{}), _0{}, Int<MMA_NSF>{})
       )
     );
     using LayoutP = decltype(

@@ -212,7 +212,24 @@ packed_float_to_ue4m3(
     : "=r"(out) : "f"(f0), "f"(f1), "f"(f2), "f"(f3));
 }
 
-CUTLASS_DEVICE void 
+// Convert two floats into two E8M0 (ue8m0) bytes, packed into one 16-bit value.
+// MXFP4 scale factors are powers of two, so this is just an exponent quantize.
+// cvt.rp rounds toward +inf so the block max can never overflow the e2m1 range.
+CUTLASS_DEVICE void
+packed_float_to_ue8m0(
+  float const &f0, float const &f1,
+  uint16_t &out
+) {
+  asm volatile( \
+    "{\n" \
+    ".reg .b16 lo;\n" \
+    "cvt.rp.satfinite.ue8m0x2.f32   lo, %2, %1;\n" \
+    "mov.b16 %0, lo;\n" \
+    "}" \
+    : "=h"(out) : "f"(f0), "f"(f1));
+}
+
+CUTLASS_DEVICE void
 packed_float_to_e2m1(
   float const &f0, float const &f1, float const &f2, float const& f3,
   float const &f4, float const &f5, float const &f6, float const& f7,

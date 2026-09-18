@@ -159,6 +159,8 @@ struct Flash_fwd_params : public Qkv_params {
 
     bool is_bf16;
     bool is_e4m3;
+    // Scale-factor tensor dtype: selects NVFP4 (float8_e4m3fn) vs MXFP4 (uint8).
+    at::ScalarType sfq_dtype;
     bool is_causal;
     bool per_block_mean;
     // If is_seqlens_k_cumulative, then seqlen_k is cu_seqlens_k[bidb + 1] - cu_seqlens_k[bidb].
