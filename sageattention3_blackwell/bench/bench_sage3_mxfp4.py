@@ -1,23 +1,31 @@
 #!/usr/bin/env python
 """MXFP4 vs NVFP4 correctness + latency for SageAttention3.
 
-Checks (plan Phase 4):
+Checks:
   - MXFP4 output vs torch SDPA and vs the NVFP4 path: max/mean abs error, cosine.
-  - Runs across head_dim, seq length (incl. L>=1024 to catch Blk_MN swizzle
-    divergence past the first tile), causal/non-causal, bf16/fp16.
+  - Runs across seq length (incl. L>=1024, to catch SF-swizzle divergence past
+    the first 128-element slab), causal/non-causal, bf16/fp16.
   - Latency for each format.
 
 Usage:
-  PYTHONPATH=/home/guest/yiliu7/sage-mxfp4/sageattention3_blackwell \\
-    /home/guest/yiliu7/vllm-omni/.venv/bin/python bench/bench_sage3_mxfp4.py [--bench]
+  PYTHONPATH=<repo-root> python bench/bench_sage3_mxfp4.py [--bench]
+
+  <repo-root> is the directory holding sageattn3/ and the built fp4attn_cuda /
+  fp4quant_cuda extensions, i.e. `git rev-parse --show-toplevel`.  It must be on
+  PYTHONPATH so the checkout's build shadows any installed copy.
 """
 import argparse
+import os
 import sys
 
 import torch
 import torch.nn.functional as F
 
-REPO = "/home/guest/yiliu7/sage-mxfp4/sageattention3_blackwell"
+# Analyse the build in THIS checkout: the repo root holds sageattn3/ plus the
+# built fp4attn_cuda / fp4quant_cuda extensions, so putting it on sys.path
+# shadows any installed copy.  Run with:
+#   PYTHONPATH=$(git rev-parse --show-toplevel) python bench/bench_sage3_mxfp4.py
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if REPO not in sys.path:
     sys.path.insert(0, REPO)
 
@@ -115,9 +123,8 @@ def main():
                     q = torch.randn(1, 40, L, 128, device="cuda", dtype=dtype) * 0.1
                     k = torch.randn(1, 40, L, 128, device="cuda", dtype=dtype) * 0.1
                     v = torch.randn(1, 40, L, 128, device="cuda", dtype=dtype) * 0.1
+                    from sageattn3 import sageattn3_blackwell
                     for _ in range(3):
-                        correctness.__wrapped__ if False else None
-                        from sageattn3 import sageattn3_blackwell
                         sageattn3_blackwell(q, k, v, fmt=fmt)
                     torch.cuda.synchronize()
                     import time
