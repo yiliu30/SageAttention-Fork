@@ -31,20 +31,31 @@ struct SoftmaxFused{
     TensorT row_sum, row_max, scores_scale;
     // Two constants fold the P-quantization scales into the exp2 above.
     //
-    // The invariant is that the operand the PV MMA receives, `value = acc/AbsMaxP`,
-    // must span [0, 6] to use the full e2m1 range (6 is the e2m1 max).
+    // Invariant: the operand the PV MMA receives, `value = acc/AbsMaxP`, must
+    // span [0, 6] to use the full e2m1 range (6 is the e2m1 max).
     //
-    //   NVFP4 (SFVecSize 16, E4M3 SF): the SF is prob_max/(448*6) -- 448 is the
-    //     E4M3 max and 6 the e2m1 max -- so acc is pre-scaled by 1/(448*6) and
-    //     AbsMaxP by a further 1/6. value = 6*prob/prob_max in [0,6].
+    // Both constants are applied as exp2 range shifts, i.e. the effective
+    // MULTIPLIERS are the reciprocals of the constants named below.  Working
+    // through a peak element (prob_max, unnormalised exp == 1):
     //
-    //   MXFP4 (SFVecSize 32, E8M0 SF): E8M0 carries no mantissa, so the 448 has no
-    //     analogue and is dropped (fp8_scalexfp4_scale_log2 = 0). The 1/6 is still
-    //     required -- e2m1 saturates at 6 regardless of SF format.
+    //   NVFP4 (SFVecSize 16, E4M3 SF):
+    //     acc     = exp_unnorm * 448*6   (=2688)   <- scaled UP
+    //     AbsMaxP = prob_max   * 448               <- SF parked near E4M3's max
+    //     value   = acc/AbsMaxP = 6*prob/prob_max in [0,6]
+    //   448 is E4M3's max and 6 is E2M1's; together they both lift the E4M3 SF
+    //   into its usable range and leave the operand spanning [0,6].
     //
-    // Note: zeroing BOTH constants would still be numerically correct, but
-    // value = prob/prob_max would span only [0,1], wasting ~2.5 bits of e2m1 and
-    // visibly hurting quality. Keep the 1/6.
+    //   MXFP4 (SFVecSize 32, E8M0 SF):
+    //     acc     = exp_unnorm * 1
+    //     AbsMaxP = prob_max/6, then ceil_pow2() by the caller
+    //     value   = acc/AbsMaxP in [0,6]
+    //   E8M0 carries no mantissa, so the 448 has no analogue and is dropped
+    //   (fp8_scalexfp4_scale_log2 = 0).  The 1/6 is STILL required -- e2m1
+    //   saturates at 6 regardless of SF format.
+    //
+    // Note: zeroing BOTH constants would still be numerically correct (the
+    // factors cancel in finalize's row_sum divide), but value would span only
+    // [0,1], wasting ~2.5 bits of e2m1. Keep the 1/6.
     static constexpr float fp8_scalexfp4_scale =
         IsMXFP4 ? 1.f : (1.f / (448 * 6));
     static constexpr float fp8_scalexfp4_scale_log2 =
@@ -61,8 +72,8 @@ struct SoftmaxFused{
     // inflated every row of O by that factor (observed: O mean 1.75 instead of
     // 1.0 for v=ones, and cosine 0.18 on the bench).
     //
-    // NVFP4 is immune because its E4M3 SF holds AbsMaxP/(448*6) with a
-    // mantissa, so the divide and the multiply agree by construction.
+    // NVFP4 is immune because its E4M3 SF holds prob_max*448 -- a value with a
+    // mantissa -- so the divide and the multiply agree by construction.
     //
     // Rounding AbsMaxP up here (instead of at SF-emit time) makes divide ==
     // multiply exactly. It is exact and free: no exp2, no cvt, just an exponent
